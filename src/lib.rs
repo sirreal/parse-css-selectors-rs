@@ -223,6 +223,7 @@ impl<'a> Parser {
 #[derive(Debug, PartialEq)]
 enum Selector<'a> {
     Ident(&'a str),
+    Class(&'a str),
 }
 
 fn is_ident_start(byte: u8) -> bool {
@@ -231,6 +232,22 @@ fn is_ident_start(byte: u8) -> bool {
 
 fn is_ident(byte: u8) -> bool {
     is_ident_start(byte) || byte.is_ascii_digit() || byte == b'-'
+}
+
+fn parse_class(s: &[u8]) -> R<Selector> {
+    if s.len() < 2 {
+        return Err(());
+    }
+
+    if s[0] != b'.' {
+        return Err(());
+    }
+
+    let (rest, ident) = parse_ident(&s[1..])?;
+    match ident {
+        Selector::Ident(ident) => Ok((rest, Selector::Class(ident))),
+        _ => Err(()),
+    }
 }
 
 fn parse_ident(s: &[u8]) -> R<Selector> {
@@ -286,7 +303,34 @@ mod tests {
     fn test_parse_ident() {
         assert!(parse_ident(b"-foo").is_err());
 
-        let (_, tok) = parse_ident(b"_-foo123").unwrap();
-        assert_eq!(tok, Selector::Ident("_-foo123"));
+        let (rest, parsed) = parse_ident(b"_-foo123#xyz").unwrap();
+        assert_eq!(rest, b"#xyz");
+        assert_eq!(parsed, Selector::Ident("_-foo123"));
+
+        // The bytes in the Flag of England emoji.
+        let flag_of_england = [
+            240u8, 159, 143, 180, 243, 160, 129, 167, 243, 160, 129, 162, 243, 160, 129, 165, 243,
+            160, 129, 174, 243, 160, 129, 167, 243, 160, 129, 191,
+        ];
+        let x = [&flag_of_england[..], b"foo123.xyz"].concat();
+
+        let (rest, parsed) = parse_ident(x.as_slice()).unwrap();
+        assert_eq!(rest, b".xyz");
+        assert_eq!(parsed, Selector::Ident("🏴󠁧󠁢󠁥󠁮󠁧󠁿foo123"));
+    }
+
+    #[test]
+    fn test_parse_class() {
+        assert!(parse_class(b"foo").is_err());
+        assert!(parse_class(b".-foo").is_err());
+        assert!(parse_class(b".1foo").is_err());
+
+        let (rest, parsed) = parse_class(b"._-foo123.more").unwrap();
+        assert_eq!(rest, b".more");
+        assert_eq!(parsed, Selector::Class("_-foo123"));
+
+        let (rest, parsed) = parse_class(b".CLASS abc").unwrap();
+        assert_eq!(rest, b" abc");
+        assert_eq!(parsed, Selector::Class("CLASS"));
     }
 }
