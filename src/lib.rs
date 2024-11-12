@@ -224,6 +224,7 @@ impl<'a> Parser {
 enum Selector<'a> {
     Ident(&'a str),
     Class(&'a str),
+    ID(&'a str),
 }
 
 fn is_ident_start(byte: u8) -> bool {
@@ -246,6 +247,22 @@ fn parse_class(s: &[u8]) -> R<Selector> {
     let (rest, ident) = parse_ident(&s[1..])?;
     match ident {
         Selector::Ident(ident) => Ok((rest, Selector::Class(ident))),
+        _ => Err(()),
+    }
+}
+
+fn parse_id(s: &[u8]) -> R<Selector> {
+    if s.len() < 2 {
+        return Err(());
+    }
+
+    if s[0] != b'#' {
+        return Err(());
+    }
+
+    let (rest, ident) = parse_ident(&s[1..])?;
+    match ident {
+        Selector::Ident(ident) => Ok((rest, Selector::ID(ident))),
         _ => Err(()),
     }
 }
@@ -332,5 +349,20 @@ mod tests {
         let (rest, parsed) = parse_class(b".CLASS abc").unwrap();
         assert_eq!(rest, b" abc");
         assert_eq!(parsed, Selector::Class("CLASS"));
+    }
+
+    #[test]
+    fn test_parse_id() {
+        assert!(parse_id(b"foo").is_err());
+        assert!(parse_id(b"#-foo").is_err());
+        assert!(parse_id(b"#1foo").is_err());
+
+        let (rest, parsed) = parse_id(b"#_-foo123.more").unwrap();
+        assert_eq!(rest, b".more");
+        assert_eq!(parsed, Selector::ID("_-foo123"));
+
+        let (rest, parsed) = parse_id(b"#ID abc").unwrap();
+        assert_eq!(rest, b" abc");
+        assert_eq!(parsed, Selector::ID("ID"));
     }
 }
