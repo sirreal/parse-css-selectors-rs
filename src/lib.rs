@@ -140,7 +140,7 @@ enum NumericTypeFlag {
 /// > <number-token>, <percentage-token>, and <dimension-token> have a numeric value. <number-token> and <dimension-token> additionally have a type flag set to either "integer" or "number". The type flag defaults to "integer" if not otherwise set. <dimension-token> additionally have a unit composed of one or more code points.
 #[derive(Debug, PartialEq)]
 enum Token<'a> {
-    Ident(&'a [Codepoint]),
+    Ident(&'a str),
     Function(&'a [Codepoint]),
     AtKeyword(&'a [Codepoint]),
     Hash(&'a [Codepoint], HashTokenFlag),
@@ -222,7 +222,6 @@ impl<'a> Parser {
 
 #[derive(Debug, PartialEq)]
 enum Selector<'a> {
-    Ident(&'a str),
     Class(&'a str),
     ID(&'a str),
 }
@@ -246,7 +245,7 @@ fn parse_class(s: &[u8]) -> R<Selector> {
 
     let (rest, ident) = parse_ident(&s[1..])?;
     match ident {
-        Selector::Ident(ident) => Ok((rest, Selector::Class(ident))),
+        Token::Ident(ident) => Ok((rest, Selector::Class(ident))),
         _ => Err(()),
     }
 }
@@ -262,12 +261,12 @@ fn parse_id(s: &[u8]) -> R<Selector> {
 
     let (rest, ident) = parse_ident(&s[1..])?;
     match ident {
-        Selector::Ident(ident) => Ok((rest, Selector::ID(ident))),
+        Token::Ident(ident) => Ok((rest, Selector::ID(ident))),
         _ => Err(()),
     }
 }
 
-fn parse_ident(s: &[u8]) -> R<Selector> {
+fn parse_ident(s: &[u8]) -> R<Token> {
     if s.is_empty() {
         return Err(());
     }
@@ -281,7 +280,7 @@ fn parse_ident(s: &[u8]) -> R<Selector> {
         i += 1;
     }
 
-    Ok((&s[i..], Selector::Ident(str_from_utf8(&s[..i]).unwrap())))
+    Ok((&s[i..], Token::Ident(str_from_utf8(&s[..i]).unwrap())))
 }
 
 mod util {
@@ -322,7 +321,7 @@ mod tests {
 
         let (rest, parsed) = parse_ident(b"_-foo123#xyz").unwrap();
         assert_eq!(rest, b"#xyz");
-        assert_eq!(parsed, Selector::Ident("_-foo123"));
+        assert_eq!(parsed, Token::Ident("_-foo123"));
 
         // The bytes in the Flag of England emoji.
         let flag_of_england = [
@@ -333,7 +332,7 @@ mod tests {
 
         let (rest, parsed) = parse_ident(x.as_slice()).unwrap();
         assert_eq!(rest, b".xyz");
-        assert_eq!(parsed, Selector::Ident("🏴󠁧󠁢󠁥󠁮󠁧󠁿foo123"));
+        assert_eq!(parsed, Token::Ident("🏴󠁧󠁢󠁥󠁮󠁧󠁿foo123"));
     }
 
     #[test]
