@@ -260,6 +260,21 @@ fn parse_id(s: &[u8]) -> R<Selector> {
     }
 
     let (rest, ident) = parse_ident(&s[1..])?;
+    let mut index = 1;
+    'l: loop {
+        match s[index] {
+            b'a'..=b'z' | b'A'..=b'Z' | b'_' | b'-' => {
+                index += 1;
+            }
+            // 81..=0x10FFFF => {}
+            b'0'..=b'9' => {
+                index += 1;
+            }
+            b'\\' => {}
+            _ => break 'l,
+        }
+    }
+
     match ident {
         Token::Ident(ident) => Ok((rest, Selector::ID(ident))),
         _ => Err(()),
@@ -363,5 +378,8 @@ mod tests {
         let (rest, parsed) = parse_id(b"#ID abc").unwrap();
         assert_eq!(rest, b" abc");
         assert_eq!(parsed, Selector::ID("ID"));
+
+        let (rest, parsed) = parse_id(b"#\\31 23").unwrap();
+        assert_eq!(parsed, Selector::ID("123"));
     }
 }
