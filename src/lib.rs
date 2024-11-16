@@ -1,3 +1,4 @@
+use core::panic;
 use std::str::from_utf8 as str_from_utf8;
 
 /// A parser for CSS selectors.
@@ -119,8 +120,6 @@ pub struct Parser {
     data: String,
 }
 
-type Codepoint = u32;
-
 #[derive(Debug, Eq, PartialEq)]
 enum HashTokenFlag {
     ID,
@@ -131,39 +130,6 @@ enum HashTokenFlag {
 enum NumericTypeFlag {
     Integer,
     Number,
-}
-
-/// > The output of tokenization step is a stream of zero or more of the following tokens: <ident-token>, <function-token>, <at-keyword-token>, <hash-token>, <string-token>, <bad-string-token>, <url-token>, <bad-url-token>, <delim-token>, <number-token>, <percentage-token>, <dimension-token>, <whitespace-token>, <CDO-token>, <CDC-token>, <colon-token>, <semicolon-token>, <comma-token>, <[-token>, <]-token>, <(-token>, <)-token>, <{-token>, and <}-token>.
-/// >
-/// > <ident-token>, <function-token>, <at-keyword-token>, <hash-token>, <string-token>, and <url-token> have a value composed of zero or more code points. Additionally, hash tokens have a type flag set to either "id" or "unrestricted". The type flag defaults to "unrestricted" if not otherwise set.
-/// > <delim-token> has a value composed of a single code point.
-/// > <number-token>, <percentage-token>, and <dimension-token> have a numeric value. <number-token> and <dimension-token> additionally have a type flag set to either "integer" or "number". The type flag defaults to "integer" if not otherwise set. <dimension-token> additionally have a unit composed of one or more code points.
-#[derive(Debug, PartialEq)]
-enum Token<'a> {
-    Ident(&'a str),
-    Function(&'a [Codepoint]),
-    AtKeyword(&'a [Codepoint]),
-    Hash(&'a [Codepoint], HashTokenFlag),
-    String(&'a [Codepoint]),
-    BadString,
-    URL(&'a [Codepoint]),
-    BadURL,
-    Delim(Codepoint),
-    Number(f64, NumericTypeFlag),
-    Percentage(f64),
-    Dimension(f64, NumericTypeFlag, &'a [Codepoint]),
-    Whitespace,
-    CDO,
-    CDC,
-    Colon,
-    Semicolon,
-    Comma,
-    SquareBracketOpen,
-    SquareBracketClose,
-    ParenOpen,
-    ParenClose,
-    CurlyBraceOpen,
-    CurlyBraceClose,
 }
 
 type R<'a, T> = Result<(&'a [u8], T), ()>;
@@ -226,12 +192,102 @@ enum Selector<'a> {
     ID(&'a str),
 }
 
-fn is_ident_start(byte: u8) -> bool {
-    byte.is_ascii_alphabetic() || byte == b'_' || byte >= 0x80u8
-}
+mod token {
+    use super::*;
 
-fn is_ident(byte: u8) -> bool {
-    is_ident_start(byte) || byte.is_ascii_digit() || byte == b'-'
+    /// > The output of tokenization step is a stream of zero or more of the following tokens: <ident-token>, <function-token>, <at-keyword-token>, <hash-token>, <string-token>, <bad-string-token>, <url-token>, <bad-url-token>, <delim-token>, <number-token>, <percentage-token>, <dimension-token>, <whitespace-token>, <CDO-token>, <CDC-token>, <colon-token>, <semicolon-token>, <comma-token>, <[-token>, <]-token>, <(-token>, <)-token>, <{-token>, and <}-token>.
+    /// >
+    /// > <ident-token>, <function-token>, <at-keyword-token>, <hash-token>, <string-token>, and <url-token> have a value composed of zero or more code points. Additionally, hash tokens have a type flag set to either "id" or "unrestricted". The type flag defaults to "unrestricted" if not otherwise set.
+    /// > <delim-token> has a value composed of a single code point.
+    /// > <number-token>, <percentage-token>, and <dimension-token> have a numeric value. <number-token> and <dimension-token> additionally have a type flag set to either "integer" or "number". The type flag defaults to "integer" if not otherwise set. <dimension-token> additionally have a unit composed of one or more code points.
+    #[derive(Debug, PartialEq)]
+    pub(super) enum Token<'a> {
+        Ident(&'a str),
+        Function(&'a str),
+        AtKeyword(&'a str),
+        Hash(&'a str, HashTokenFlag),
+        String(&'a str),
+        BadString,
+        URL(&'a str),
+        BadURL,
+        Delim(u32),
+        Number(f64, NumericTypeFlag),
+        Percentage(f64),
+        Dimension(f64, NumericTypeFlag, &'a str),
+        Whitespace,
+        CDO,
+        CDC,
+        Colon,
+        Semicolon,
+        Comma,
+        SquareBracketOpen,
+        SquareBracketClose,
+        ParenOpen,
+        ParenClose,
+        CurlyBraceOpen,
+        CurlyBraceClose,
+    }
+
+    fn is_non_ascii(cp: &Codepoint) -> bool {
+        cp.value >= 0x80
+    }
+
+    fn is_ident_start(cp: &Codepoint) -> bool {
+        matches!(cp.char, 'A'..='Z' | 'a'..='z' | '_' ) || cp.value > 0x80
+    }
+
+    fn is_ident(cp: &Codepoint) -> bool {
+        is_ident_start(cp) || matches!(cp.char, '0'..='9' | '-')
+    }
+
+    pub(super) fn parse_ident(s: &[u8]) -> R<Token> {
+        if s.is_empty() {
+            return Err(());
+        }
+
+        let mut cp = Codepoint::from_bytes(s)?.ok_or(())?;
+        if !is_ident_start(&cp) {
+            return Err(());
+        }
+
+        let mut bytelength = cp.bytelength;
+
+        cp = Codepoint::from_bytes(&s[bytelength..])?.ok_or(())?;
+        while is_ident(&cp) {
+            bytelength += cp.bytelength;
+            cp = Codepoint::from_bytes(&s[bytelength..])?.ok_or(())?;
+        }
+
+        Ok((
+            &s[bytelength..],
+            Token::Ident(str_from_utf8(&s[..bytelength]).unwrap()),
+        ))
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn test_parse_ident() {
+            assert!(parse_ident(b"-foo").is_err());
+
+            let (rest, parsed) = parse_ident(b"_-foo123#xyz").unwrap();
+            assert_eq!(rest, b"#xyz");
+            assert_eq!(parsed, Token::Ident("_-foo123"));
+
+            // The bytes in the Flag of England emoji.
+            let flag_of_england = [
+                240u8, 159, 143, 180, 243, 160, 129, 167, 243, 160, 129, 162, 243, 160, 129, 165,
+                243, 160, 129, 174, 243, 160, 129, 167, 243, 160, 129, 191,
+            ];
+            let x = [&flag_of_england[..], b"foo123.xyz"].concat();
+
+            let (rest, parsed) = parse_ident(x.as_slice()).unwrap();
+            assert_eq!(rest, b".xyz");
+            assert_eq!(parsed, Token::Ident("🏴󠁧󠁢󠁥󠁮󠁧󠁿foo123"));
+        }
+    }
 }
 
 fn parse_class(s: &[u8]) -> R<Selector> {
@@ -243,9 +299,9 @@ fn parse_class(s: &[u8]) -> R<Selector> {
         return Err(());
     }
 
-    let (rest, ident) = parse_ident(&s[1..])?;
+    let (rest, ident) = token::parse_ident(&s[1..])?;
     match ident {
-        Token::Ident(ident) => Ok((rest, Selector::Class(ident))),
+        token::Token::Ident(ident) => Ok((rest, Selector::Class(ident))),
         _ => Err(()),
     }
 }
@@ -259,7 +315,7 @@ fn parse_id(s: &[u8]) -> R<Selector> {
         return Err(());
     }
 
-    let (rest, ident) = parse_ident(&s[1..])?;
+    let (rest, ident) = token::parse_ident(&s[1..])?;
     let mut index = 1;
     'l: loop {
         match s[index] {
@@ -276,26 +332,106 @@ fn parse_id(s: &[u8]) -> R<Selector> {
     }
 
     match ident {
-        Token::Ident(ident) => Ok((rest, Selector::ID(ident))),
+        token::Token::Ident(ident) => Ok((rest, Selector::ID(ident))),
         _ => Err(()),
     }
 }
 
-fn parse_ident(s: &[u8]) -> R<Token> {
-    if s.is_empty() {
-        return Err(());
-    }
+#[derive(Debug, PartialEq)]
+struct Codepoint {
+    char: char,
+    value: u32,
+    bytelength: usize,
+}
 
-    if !is_ident_start(s[0]) {
-        return Err(());
-    }
+/// This is the mask for a UTF-8 continuation byte, part of a code point but not in the initial
+/// position.
+/// This also indicates a first byte of a single-byte code point
+/// if `&` is 0, because single byte code points must begin with a 0 bit.
+const UTF8_CONTINUATION_BITMASK: u8 = 0b1000_0000;
 
-    let mut i = 1usize;
-    while s.len() > i && is_ident(s[i]) {
-        i += 1;
-    }
+/// This is the mask for the first byte of a 2-byte UTF-8 code point.
+const UTF8_2_BYTE_BITMASK: u8 = 0b0001_1111;
 
-    Ok((&s[i..], Token::Ident(str_from_utf8(&s[..i]).unwrap())))
+/// This is the mask for the first byte of a 3-byte UTF-8 code point.
+const UTF8_3_BYTE_BITMASK: u8 = 0b0000_1111;
+
+/// This is the mask for the first byte of a 4-byte UTF-8 code point.
+const UTF8_4_BYTE_BITMASK: u8 = 0b0000_0111;
+
+const UTF8_MAX_CODEPOINT_VALUE: u32 = 0x10FFFF;
+
+#[derive(Debug)]
+enum UTF8Error {
+    InvalidInitialByte,
+    MissingBytes,
+    InvalidContinuationByte,
+    CodepointOutOfRange,
+}
+
+impl From<UTF8Error> for () {
+    fn from(_: UTF8Error) {}
+}
+
+impl Codepoint {
+    fn from_bytes(s: &[u8]) -> Result<Option<Self>, UTF8Error> {
+        if s.is_empty() {
+            return Ok(None);
+        }
+
+        let bytelength: usize = if s[0] & 0b1000_0000 == 0 {
+            return Ok(Some(Self {
+                value: s[0] as u32,
+                char: s[0] as char,
+                bytelength: 1,
+            }));
+        } else if s[0] & 0b1111_1000 == 0b1111_0000 {
+            println!("b0 {:#08b}", s[0]);
+            4
+        } else if s[0] & 0b1111_0000 == 0b1110_0000 {
+            3
+        } else if s[0] & 0b1110_0000 == 0b1100_0000 {
+            2
+        } else {
+            return Err(UTF8Error::InvalidInitialByte);
+        };
+
+        if s.len() < bytelength {
+            return Err(UTF8Error::MissingBytes);
+        }
+
+        let mut value = match bytelength {
+            4 => (s[0] & UTF8_4_BYTE_BITMASK) as u32,
+            3 => (s[0] & UTF8_3_BYTE_BITMASK) as u32,
+            2 => (s[0] & UTF8_3_BYTE_BITMASK) as u32,
+            _ => panic!("invalid bytelength"),
+        };
+        println!("value {:#08b}", value);
+
+        for byte_number in 1..bytelength {
+            println!("b{:?} {:#08b}", byte_number, s[byte_number]);
+            if (s[byte_number] & 0b1100_0000) == 0b1000_0000 {
+                println!("shifted value {:#b}", value << 6);
+                println!("or-ed value {:#b}", s[byte_number] & 0b0011_1111);
+                value = (value << 6) | (s[byte_number] & 0b0011_1111) as u32;
+                println!("result value {:#b}", value);
+            } else {
+                return Err(UTF8Error::InvalidContinuationByte);
+            }
+        }
+
+        if value > UTF8_MAX_CODEPOINT_VALUE {
+            return Err(UTF8Error::CodepointOutOfRange);
+        }
+
+        let char = unsafe { std::char::from_u32_unchecked(value) };
+
+        Ok(Some(Self {
+            value,
+            char,
+            bytelength,
+        }))
+    }
 }
 
 mod util {
@@ -331,26 +467,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_parse_ident() {
-        assert!(parse_ident(b"-foo").is_err());
-
-        let (rest, parsed) = parse_ident(b"_-foo123#xyz").unwrap();
-        assert_eq!(rest, b"#xyz");
-        assert_eq!(parsed, Token::Ident("_-foo123"));
-
-        // The bytes in the Flag of England emoji.
-        let flag_of_england = [
-            240u8, 159, 143, 180, 243, 160, 129, 167, 243, 160, 129, 162, 243, 160, 129, 165, 243,
-            160, 129, 174, 243, 160, 129, 167, 243, 160, 129, 191,
-        ];
-        let x = [&flag_of_england[..], b"foo123.xyz"].concat();
-
-        let (rest, parsed) = parse_ident(x.as_slice()).unwrap();
-        assert_eq!(rest, b".xyz");
-        assert_eq!(parsed, Token::Ident("🏴󠁧󠁢󠁥󠁮󠁧󠁿foo123"));
-    }
-
-    #[test]
     fn test_parse_class() {
         assert!(parse_class(b"foo").is_err());
         assert!(parse_class(b".-foo").is_err());
@@ -381,5 +497,46 @@ mod tests {
 
         let (rest, parsed) = parse_id(b"#\\31 23").unwrap();
         assert_eq!(parsed, Selector::ID("123"));
+    }
+
+    #[test]
+    fn test_codepoint_1byte() {
+        let codepoint = Codepoint::from_bytes(b"abc").unwrap().unwrap();
+        assert_eq!(codepoint.char, 'a');
+        assert_eq!(codepoint.value, 'a' as u32);
+        assert_eq!(codepoint.bytelength, 1);
+    }
+
+    #[test]
+    fn test_codepoint_2byte() {
+        let c = '¬';
+        let s: String = String::from(c);
+        assert_eq!(s.as_bytes().len(), 2);
+        let codepoint = Codepoint::from_bytes(s.as_bytes()).unwrap().unwrap();
+        assert_eq!(codepoint.char, c);
+        assert_eq!(codepoint.value, c as u32);
+        assert_eq!(codepoint.bytelength, 2);
+    }
+
+    #[test]
+    fn test_codepoint_3byte() {
+        let c = '∑';
+        let s: String = String::from(c);
+        assert_eq!(s.as_bytes().len(), 3);
+        let codepoint = Codepoint::from_bytes(s.as_bytes()).unwrap().unwrap();
+        assert_eq!(codepoint.char, c);
+        assert_eq!(codepoint.value, c as u32);
+        assert_eq!(codepoint.bytelength, 3);
+    }
+
+    #[test]
+    fn test_codepoint_4byte() {
+        let c = '🦸';
+        let s: String = String::from(c);
+        assert_eq!(s.as_bytes().len(), 4);
+        let codepoint = Codepoint::from_bytes(s.as_bytes()).unwrap().unwrap();
+        assert_eq!(codepoint.char, c);
+        assert_eq!(codepoint.value, c as u32);
+        assert_eq!(codepoint.bytelength, 4);
     }
 }
