@@ -337,18 +337,6 @@ fn parse_id(s: &[u8]) -> R<Selector> {
     }
 }
 
-#[derive(Debug, PartialEq)]
-struct Codepoint {
-    char: char,
-    value: u32,
-    bytelength: usize,
-}
-
-const UTF8_2_BYTE_BITMASK: u8 = 0b0001_1111;
-const UTF8_3_BYTE_BITMASK: u8 = 0b0000_1111;
-const UTF8_4_BYTE_BITMASK: u8 = 0b0000_0111;
-const UTF8_MAX_CODEPOINT_VALUE: u32 = 0x10FFFF;
-
 impl From<UTF8Error> for () {
     fn from(_: UTF8Error) {}
 }
@@ -361,24 +349,32 @@ enum UTF8Error {
     CodepointOutOfRange,
 }
 
+const UTF8_2_BYTE_BITMASK: u8 = 0b0001_1111;
+const UTF8_3_BYTE_BITMASK: u8 = 0b0000_1111;
+const UTF8_4_BYTE_BITMASK: u8 = 0b0000_0111;
+const UTF8_MAX_CODEPOINT_VALUE: u32 = 0x10FFFF;
+
+#[derive(Debug, PartialEq)]
+struct Codepoint {
+    char: char,
+    value: u32,
+    bytelength: usize,
+}
+
 impl Codepoint {
     fn from_bytes(s: &[u8]) -> Result<Option<Self>, UTF8Error> {
         if s.is_empty() {
             return Ok(None);
         }
 
-        let bytelength: usize = if s[0] & 0b1000_0000 == 0 {
-            return Ok(Some(Self {
-                value: s[0] as u32,
-                char: s[0] as char,
-                bytelength: 1,
-            }));
+        let (bytelength, mut value) = if s[0] & 0b1000_0000 == 0 {
+            (1, s[0] as u32)
         } else if s[0] & 0b1110_0000 == 0b1100_0000 {
-            2
+            (2, (s[0] & UTF8_2_BYTE_BITMASK) as u32)
         } else if s[0] & 0b1111_0000 == 0b1110_0000 {
-            3
+            (3, (s[0] & UTF8_3_BYTE_BITMASK) as u32)
         } else if s[0] & 0b1111_1000 == 0b1111_0000 {
-            4
+            (4, (s[0] & UTF8_4_BYTE_BITMASK) as u32)
         } else {
             return Err(UTF8Error::InvalidInitialByte);
         };
@@ -387,16 +383,9 @@ impl Codepoint {
             return Err(UTF8Error::MissingBytes);
         }
 
-        let mut value = match bytelength {
-            2 => (s[0] & UTF8_2_BYTE_BITMASK) as u32,
-            3 => (s[0] & UTF8_3_BYTE_BITMASK) as u32,
-            4 => (s[0] & UTF8_4_BYTE_BITMASK) as u32,
-            _ => panic!("invalid bytelength"),
-        };
-
-        for byte_number in 1..bytelength {
-            if (s[byte_number] & 0b1100_0000) == 0b1000_0000 {
-                value = (value << 6) | (s[byte_number] & 0b0011_1111) as u32;
+        for byte in &s[1..bytelength] {
+            if (byte & 0b1100_0000) == 0b1000_0000 {
+                value = (value << 6) | (byte & 0b0011_1111) as u32;
             } else {
                 return Err(UTF8Error::InvalidContinuationByte);
             }
@@ -406,6 +395,7 @@ impl Codepoint {
             return Err(UTF8Error::CodepointOutOfRange);
         }
 
+        // Unsafe! Because we already did the utf8 checking above!
         let char = unsafe { std::char::from_u32_unchecked(value) };
 
         Ok(Some(Self {
