@@ -344,22 +344,14 @@ struct Codepoint {
     bytelength: usize,
 }
 
-/// This is the mask for a UTF-8 continuation byte, part of a code point but not in the initial
-/// position.
-/// This also indicates a first byte of a single-byte code point
-/// if `&` is 0, because single byte code points must begin with a 0 bit.
-const UTF8_CONTINUATION_BITMASK: u8 = 0b1000_0000;
-
-/// This is the mask for the first byte of a 2-byte UTF-8 code point.
 const UTF8_2_BYTE_BITMASK: u8 = 0b0001_1111;
-
-/// This is the mask for the first byte of a 3-byte UTF-8 code point.
 const UTF8_3_BYTE_BITMASK: u8 = 0b0000_1111;
-
-/// This is the mask for the first byte of a 4-byte UTF-8 code point.
 const UTF8_4_BYTE_BITMASK: u8 = 0b0000_0111;
-
 const UTF8_MAX_CODEPOINT_VALUE: u32 = 0x10FFFF;
+
+impl From<UTF8Error> for () {
+    fn from(_: UTF8Error) {}
+}
 
 #[derive(Debug)]
 enum UTF8Error {
@@ -367,10 +359,6 @@ enum UTF8Error {
     MissingBytes,
     InvalidContinuationByte,
     CodepointOutOfRange,
-}
-
-impl From<UTF8Error> for () {
-    fn from(_: UTF8Error) {}
 }
 
 impl Codepoint {
@@ -385,13 +373,12 @@ impl Codepoint {
                 char: s[0] as char,
                 bytelength: 1,
             }));
-        } else if s[0] & 0b1111_1000 == 0b1111_0000 {
-            println!("b0 {:#08b}", s[0]);
-            4
-        } else if s[0] & 0b1111_0000 == 0b1110_0000 {
-            3
         } else if s[0] & 0b1110_0000 == 0b1100_0000 {
             2
+        } else if s[0] & 0b1111_0000 == 0b1110_0000 {
+            3
+        } else if s[0] & 0b1111_1000 == 0b1111_0000 {
+            4
         } else {
             return Err(UTF8Error::InvalidInitialByte);
         };
@@ -401,20 +388,15 @@ impl Codepoint {
         }
 
         let mut value = match bytelength {
-            4 => (s[0] & UTF8_4_BYTE_BITMASK) as u32,
+            2 => (s[0] & UTF8_2_BYTE_BITMASK) as u32,
             3 => (s[0] & UTF8_3_BYTE_BITMASK) as u32,
-            2 => (s[0] & UTF8_3_BYTE_BITMASK) as u32,
+            4 => (s[0] & UTF8_4_BYTE_BITMASK) as u32,
             _ => panic!("invalid bytelength"),
         };
-        println!("value {:#08b}", value);
 
         for byte_number in 1..bytelength {
-            println!("b{:?} {:#08b}", byte_number, s[byte_number]);
             if (s[byte_number] & 0b1100_0000) == 0b1000_0000 {
-                println!("shifted value {:#b}", value << 6);
-                println!("or-ed value {:#b}", s[byte_number] & 0b0011_1111);
                 value = (value << 6) | (s[byte_number] & 0b0011_1111) as u32;
-                println!("result value {:#b}", value);
             } else {
                 return Err(UTF8Error::InvalidContinuationByte);
             }
@@ -538,5 +520,82 @@ mod tests {
         assert_eq!(codepoint.char, c);
         assert_eq!(codepoint.value, c as u32);
         assert_eq!(codepoint.bytelength, 4);
+    }
+
+    #[test]
+    fn test_codepoints_flag_of_england() {
+        let bytestring = [
+            240, 159, 143, 180, 243, 160, 129, 167, 243, 160, 129, 162, 243, 160, 129, 165, 243,
+            160, 129, 174, 243, 160, 129, 167, 243, 160, 129, 191,
+        ];
+
+        let mut codepoints = Vec::new();
+        let mut s = &bytestring[..];
+        while let Ok(Some(cp)) = Codepoint::from_bytes(s) {
+            codepoints.push(cp.value);
+            s = &s[cp.bytelength..];
+        }
+
+        assert_eq!(
+            codepoints,
+            vec![
+                0x1F3F4, // U+1F3F4 WAVING BLACK FLAG
+                0xE0067, // U+E0067 TAG LATIN SMALL LETTER G
+                0xE0062, // U+E0062 TAG LATIN SMALL LETTER B
+                0xE0065, // U+E0065 TAG LATIN SMALL LETTER E
+                0xE006E, // U+E006E TAG LATIN SMALL LETTER N
+                0xE0067, // U+E0067 TAG LATIN SMALL LETTER G
+                0xE007F, // U+E007F CANCEL TAG
+            ]
+        );
+    }
+
+    #[test]
+    fn test_codepoints_woman_superhero_dark_skin_tone() {
+        let bytestring = [
+            240, 159, 166, 184, 240, 159, 143, 191, 226, 128, 141, 226, 153, 128, 239, 184, 143,
+        ];
+
+        let mut codepoints = Vec::new();
+        let mut s = &bytestring[..];
+        while let Ok(Some(cp)) = Codepoint::from_bytes(s) {
+            codepoints.push(cp.value);
+            s = &s[cp.bytelength..];
+        }
+
+        assert_eq!(
+            codepoints,
+            vec![
+                0x1F9B8, // Superhero
+                0x1F3FF, // EMOJI MODIFIER FITZPATRICK TYPE-6 (dark skin tone)
+                0x0200D, // ZERO WIDTH JOINER (ZWJ)
+                0x02640, // FEMALE SIGN
+                0x0FE0F, // VARIATION SELECTOR-16 (emoji variation)
+            ]
+        );
+    }
+
+    #[test]
+    fn test_codepoints_woman_astronaut_light_skin_tone() {
+        let bytestring = [
+            240, 159, 145, 169, 240, 159, 143, 187, 226, 128, 141, 240, 159, 154, 128,
+        ];
+
+        let mut codepoints = Vec::new();
+        let mut s = &bytestring[..];
+        while let Ok(Some(cp)) = Codepoint::from_bytes(s) {
+            codepoints.push(cp.value);
+            s = &s[cp.bytelength..];
+        }
+
+        assert_eq!(
+            codepoints,
+            vec![
+                0x1F469, // Woman
+                0x1F3FB, // EMOJI MODIFIER FITZPATRICK TYPE-1-2 (light skin tone)
+                0x0200D, // ZERO WIDTH JOINER (ZWJ)
+                0x1F680, // Rocket
+            ]
+        );
     }
 }
