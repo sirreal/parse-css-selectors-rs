@@ -115,6 +115,23 @@ use std::str::from_utf8 as str_from_utf8;
 ///     println!("{:?}", token);
 /// }
 /// ```
+///
+///
+///
+
+/// These tokens are mentioned in parsing selectors:
+
+/// > <ident-token>
+/// >
+/// > <hash-token>
+/// >
+/// > <string-token>
+/// >
+/// > <function-token>
+///
+/// > https://www.w3.org/TR/css-syntax-3/#consume-token
+///
+///
 
 pub struct Parser {
     data: String,
@@ -187,9 +204,9 @@ impl<'a> Parser {
 //}
 
 #[derive(Debug, PartialEq)]
-enum Selector<'a> {
-    Class(&'a str),
-    ID(&'a str),
+enum Selector {
+    Class(String),
+    ID(String),
 }
 
 mod token {
@@ -202,10 +219,10 @@ mod token {
     /// > <number-token>, <percentage-token>, and <dimension-token> have a numeric value. <number-token> and <dimension-token> additionally have a type flag set to either "integer" or "number". The type flag defaults to "integer" if not otherwise set. <dimension-token> additionally have a unit composed of one or more code points.
     #[derive(Debug, PartialEq)]
     pub(super) enum Token<'a> {
-        Ident(&'a str),
+        Ident(String),
         Function(&'a str),
         AtKeyword(&'a str),
-        Hash(&'a str, HashTokenFlag),
+        Hash(String, HashTokenFlag),
         String(&'a str),
         BadString,
         URL(&'a str),
@@ -240,28 +257,209 @@ mod token {
         is_ident_start(cp) || matches!(cp.char, '0'..='9' | '-')
     }
 
-    pub(super) fn parse_ident(s: &[u8]) -> R<Token> {
+    /// > 4.3.8. Check if two code points are a valid escape
+    /// > This section describes how to check if two code points are a valid escape. The algorithm described here can be called explicitly with two code points, or can be called with the input stream itself. In the latter case, the two code points in question are the current input code point and the next input code point, in that order.
+    /// >
+    /// > Note: This algorithm will not consume any additional code point.
+    /// >
+    /// > If the first code point is not U+005C REVERSE SOLIDUS (\), return false.
+    /// >
+    /// > Otherwise, if the second code point is a newline, return false.
+    /// >
+    /// > Otherwise, return true.
+    ///
+    /// https://www.w3.org/TR/css-syntax-3/#starts-with-a-valid-escape
+    ///
+    /// @todo this does not check whether the second codepoint is valid.
+    fn next_two_are_valid_escape(s: &[u8]) -> bool {
+        if s.len() < 2 {
+            return false;
+        }
+        s[0] == b'\\' && s[1] != b'\n'
+    }
+
+    /// > 4.3.9. Check if three code points would start an ident sequence
+    /// > This section describes how to check if three code points would start an ident sequence. The algorithm described here can be called explicitly with three code points, or can be called with the input stream itself. In the latter case, the three code points in question are the current input code point and the next two input code points, in that order.
+    /// >
+    /// > Note: This algorithm will not consume any additional code points.
+    /// >
+    /// > Look at the first code point:
+    /// >
+    /// > U+002D HYPHEN-MINUS
+    /// >   If the second code point is an ident-start code point or a U+002D HYPHEN-MINUS, or the second and third code points are a valid escape, return true. Otherwise, return false.
+    /// > ident-start code point
+    /// >   Return true.
+    /// > U+005C REVERSE SOLIDUS (\)
+    /// >   If the first and second code points are a valid escape, return true. Otherwise, return false.
+    /// > anything else
+    /// >   Return false.
+    ///
+    /// https://www.w3.org/TR/css-syntax-3/#would-start-an-identifier
+    fn check_if_three_code_points_would_start_an_ident_sequence(s: &[u8]) -> bool {
         if s.is_empty() {
+            return false;
+        }
+
+        // > U+005C REVERSE SOLIDUS (\)
+        if s[0] == b'\\' {
+            return next_two_are_valid_escape(s);
+        }
+
+        // > U+002D HYPHEN-MINUS
+        if s[0] == b'-' {
+            let after_initial_hyphen_minus = &s[1..];
+
+            // > If the second code point is… U+002D HYPHEN-MINUS… return true
+            if after_initial_hyphen_minus[0] == b'-' {
+                return true;
+            }
+
+            // > If the second and third code points are a valid escape, return true.
+            if next_two_are_valid_escape(after_initial_hyphen_minus) {
+                return true;
+            }
+
+            // > If the second code point is an ident-start code point… return true.
+            if let Some((second_cp, _)) = Codepoint::take(after_initial_hyphen_minus) {
+                return is_ident_start(&second_cp);
+            }
+
+            // > Otherwise, return false.
+            return false;
+        }
+
+        // > ident-start code point
+        // >   Return true.
+        // > anything else
+        // >   Return false.
+        Codepoint::take(s)
+            .map(|(cp, _)| is_ident_start(&cp))
+            .unwrap_or(false)
+    }
+
+    /// > 4.3.7. Consume an escaped code point
+    /// > This section describes how to consume an escaped code point. It assumes that the U+005C
+    /// > REVERSE SOLIDUS (\) has already been consumed and that the next input code point has
+    /// > already been verified to be part of a valid escape. It will return a code point.
+    /// >
+    /// > Consume the next input code point.
+    /// >
+    /// > hex digit
+    /// >   Consume as many hex digits as possible, but no more than 5. Note that this means 1-6
+    /// >   hex digits have been consumed in total. If the next input code point is whitespace,
+    /// >   consume it as well. Interpret the hex digits as a hexadecimal number. If this number is
+    /// >   zero, or is for a surrogate, or is greater than the maximum allowed code point, return
+    /// >   U+FFFD REPLACEMENT CHARACTER (�). Otherwise, return the code point with that value.
+    /// > EOF
+    /// >   This is a parse error. Return U+FFFD REPLACEMENT CHARACTER (�).
+    /// > anything else
+    /// >   Return the current input code point.
+    fn consume_escaped_codepoint(s: &[u8]) -> (char, &[u8]) {
+        if s[0].is_ascii_hexdigit() {
+            let mut hex_ends = 1;
+            while s.len() > hex_ends && hex_ends < 6 && s[hex_ends].is_ascii_hexdigit() {
+                hex_ends += 1;
+            }
+            let hex_string = unsafe { std::str::from_utf8_unchecked(&s[..hex_ends]) };
+            let char_digit = u32::from_str_radix(hex_string, 16).unwrap();
+
+            // > A surrogate is a leading surrogate or a trailing surrogate.
+            // > A leading surrogate is a code point that is in the range U+D800 to U+DBFF, inclusive.
+            // > A trailing surrogate is a code point that is in the range U+DC00 to U+DFFF, inclusive.
+            // The surrogate ranges are adjacent, so the complete range is 0xD800..=0xDFFF,
+            // inclusive.
+            let char = if char_digit == 0
+                || char_digit > UTF8_MAX_CODEPOINT_VALUE
+                || matches!(char_digit, 0xD800..=0xDFFF)
+            {
+                '\u{FFFD}'
+            } else {
+                unsafe { char::from_u32_unchecked(char_digit) }
+            };
+
+            // If the next input code point is whitespace, consume it as well.
+            if s.len() > hex_ends && matches!(s[hex_ends], b'\n' | b'\t' | b' ') {
+                hex_ends += 1;
+            }
+            return (char, &s[hex_ends..]);
+        }
+
+        Codepoint::take(s)
+            .map(|(cp, rest)| (cp.char, rest))
+            .expect("codepoint should be guaranteed valid here")
+    }
+
+    /// > 4.3.11. Consume an ident sequence
+    /// > This section describes how to consume an ident sequence from a stream of code points. It returns a string containing the largest name that can be formed from adjacent code points in the stream, starting from the first.
+    /// >
+    /// > Note: This algorithm does not do the verification of the first few code points that are necessary to ensure the returned code points would constitute an <ident-token>. If that is the intended use, ensure that the stream starts with an ident sequence before calling this algorithm.
+    /// >
+    /// > Let result initially be an empty string.
+    /// >
+    /// > Repeatedly consume the next input code point from the stream:
+    /// >
+    /// > ident code point
+    /// > Append the code point to result.
+    /// > the stream starts with a valid escape
+    /// > Consume an escaped code point. Append the returned code point to result.
+    /// > anything else
+    /// > Reconsume the current input code point. Return result.
+    /// https://www.w3.org/TR/css-syntax-3/#consume-name
+    pub(super) fn parse_ident(s: &[u8]) -> R<Token> {
+        if !check_if_three_code_points_would_start_an_ident_sequence(s) {
             return Err(());
         }
 
-        let mut cp = Codepoint::from_bytes(s)?.ok_or(())?;
-        if !is_ident_start(&cp) {
+        let mut ident = String::new();
+
+        let mut rest = s;
+        loop {
+            if next_two_are_valid_escape(rest) {
+                let (char, next_rest) = consume_escaped_codepoint(&rest[1..]);
+                ident.push(char);
+                rest = next_rest;
+                continue;
+            } else if let Some((cp, next_rest)) = Codepoint::take(rest) {
+                if is_ident(&cp) {
+                    ident.push(cp.char);
+                    rest = next_rest;
+                    continue;
+                }
+            }
+            break;
+        }
+
+        Ok((rest, Token::Ident(ident)))
+    }
+
+    /// Tokenization of hash tokens
+    ///
+    /// > U+0023 NUMBER SIGN (#)
+    /// >   If the next input code point is an ident code point or the next two input code points are a valid escape, then:
+    /// >     1. Create a <hash-token>.
+    /// >     2. If the next 3 input code points would start an ident sequence, set the
+    /// >        <hash-token>’s type flag to "id".
+    /// >     3. Consume an ident sequence, and set the <hash-token>’s value to the
+    ///          returned string.
+    /// >     4. Return the <hash-token>.
+    /// >   Otherwise, return a <delim-token> with its value set to the current input code point.
+    ///
+    /// This implementation is not interested in the <delim-token> that is not relevant for CSS
+    /// selectors.
+    pub(super) fn parse_hash_token(s: &[u8]) -> R<Token> {
+        if s.len() < 2 || s[0] != b'#' {
             return Err(());
         }
 
-        let mut bytelength = cp.bytelength;
-
-        cp = Codepoint::from_bytes(&s[bytelength..])?.ok_or(())?;
-        while is_ident(&cp) {
-            bytelength += cp.bytelength;
-            cp = Codepoint::from_bytes(&s[bytelength..])?.ok_or(())?;
+        let rest = &s[1..];
+        if check_if_three_code_points_would_start_an_ident_sequence(rest) {
+            match parse_ident(rest)? {
+                (rest, Token::Ident(ident)) => Ok((rest, Token::Hash(ident, HashTokenFlag::ID))),
+                _ => unreachable!(),
+            }
+        } else {
+            Err(())
         }
-
-        Ok((
-            &s[bytelength..],
-            Token::Ident(str_from_utf8(&s[..bytelength]).unwrap()),
-        ))
     }
 
     #[cfg(test)]
@@ -270,11 +468,9 @@ mod token {
 
         #[test]
         fn test_parse_ident() {
-            assert!(parse_ident(b"-foo").is_err());
-
             let (rest, parsed) = parse_ident(b"_-foo123#xyz").unwrap();
             assert_eq!(rest, b"#xyz");
-            assert_eq!(parsed, Token::Ident("_-foo123"));
+            assert_eq!(parsed, Token::Ident("_-foo123".to_owned()));
 
             // The bytes in the Flag of England emoji.
             let flag_of_england = [
@@ -285,7 +481,87 @@ mod token {
 
             let (rest, parsed) = parse_ident(x.as_slice()).unwrap();
             assert_eq!(rest, b".xyz");
-            assert_eq!(parsed, Token::Ident("🏴󠁧󠁢󠁥󠁮󠁧󠁿foo123"));
+            assert_eq!(parsed, Token::Ident("🏴󠁧󠁢󠁥󠁮󠁧󠁿foo123".to_owned()));
+        }
+
+        #[test]
+        fn test_parse_ident_escape() {
+            let (rest, parsed) = parse_ident(b"\\xyz").unwrap();
+            assert!(rest.is_empty());
+            assert_eq!(parsed, Token::Ident("xyz".to_owned()));
+
+            let (rest, parsed) = parse_ident(b"\\ n").unwrap();
+            assert!(rest.is_empty());
+            assert_eq!(parsed, Token::Ident(" n".to_owned()));
+
+            let (rest, parsed) = parse_ident("\\".as_bytes()).unwrap();
+            assert!(rest.is_empty());
+            assert_eq!(parsed, Token::Ident("".to_owned()));
+
+            let (rest, parsed) = parse_ident("\\abcd".as_bytes()).unwrap();
+            assert!(rest.is_empty());
+            assert_eq!(parsed, Token::Ident("ꯍ".to_owned()));
+        }
+
+        #[test]
+        fn test_escape_hex_digits_stop_at_whitespace() {
+            let (rest, parsed) = parse_ident(b"\\31 23").unwrap();
+            assert!(rest.is_empty());
+            assert_eq!(parsed, Token::Ident("123".to_owned()));
+
+            let (rest, parsed) = parse_ident(b"\\31\t23").unwrap();
+            assert!(rest.is_empty());
+            assert_eq!(parsed, Token::Ident("123".to_owned()));
+
+            let (rest, parsed) = parse_ident(b"\\31\n23").unwrap();
+            assert!(rest.is_empty());
+            assert_eq!(parsed, Token::Ident("123".to_owned()));
+
+            let (rest, parsed) = parse_ident(b"\\9").unwrap();
+            assert!(rest.is_empty());
+            assert_eq!(parsed, Token::Ident("\t".to_owned()));
+        }
+
+        #[test]
+        fn test_escape_hex_digits_out_of_range_is_replacement_character() {
+            let (rest, parsed) = parse_ident(b"\\110000 ").unwrap();
+            assert!(rest.is_empty());
+            assert_eq!(parsed, Token::Ident("\u{FFFD}".to_owned()));
+
+            let (rest, parsed) = parse_ident(b"\\ffffff ").unwrap();
+            assert!(rest.is_empty());
+            assert_eq!(parsed, Token::Ident("\u{FFFD}".to_owned()));
+        }
+
+        #[test]
+        fn test_escape_hex_digits_surrogates_are_replacement_character() {
+            // > A surrogate is a leading surrogate or a trailing surrogate.
+            // > A leading surrogate is a code point that is in the range U+D800 to U+DBFF, inclusive.
+            // > A trailing surrogate is a code point that is in the range U+DC00 to U+DFFF, inclusive.
+            // The surrogate ranges are adjacent, so the complete range is 0xD800..=0xDFFF,
+            // inclusive.
+            let (rest, parsed) = parse_ident(b"\\d800 ").unwrap();
+            assert!(rest.is_empty());
+            assert_eq!(parsed, Token::Ident("\u{FFFD}".to_owned()));
+
+            let (rest, parsed) = parse_ident(b"\\dbff ").unwrap();
+            assert!(rest.is_empty());
+            assert_eq!(parsed, Token::Ident("\u{FFFD}".to_owned()));
+
+            let (rest, parsed) = parse_ident(b"\\dc00 ").unwrap();
+            assert!(rest.is_empty());
+            assert_eq!(parsed, Token::Ident("\u{FFFD}".to_owned()));
+
+            let (rest, parsed) = parse_ident(b"\\dfff ").unwrap();
+            assert!(rest.is_empty());
+            assert_eq!(parsed, Token::Ident("\u{FFFD}".to_owned()));
+        }
+
+        #[test]
+        fn test_escape_hex_digits_max_six() {
+            let (rest, parsed) = parse_ident(b"\\000061bc").unwrap();
+            assert!(rest.is_empty());
+            assert_eq!(parsed, Token::Ident(String::from("abc")));
         }
     }
 }
@@ -307,32 +583,9 @@ fn parse_class(s: &[u8]) -> R<Selector> {
 }
 
 fn parse_id(s: &[u8]) -> R<Selector> {
-    if s.len() < 2 {
-        return Err(());
-    }
-
-    if s[0] != b'#' {
-        return Err(());
-    }
-
-    let (rest, ident) = token::parse_ident(&s[1..])?;
-    let mut index = 1;
-    'l: loop {
-        match s[index] {
-            b'a'..=b'z' | b'A'..=b'Z' | b'_' | b'-' => {
-                index += 1;
-            }
-            // 81..=0x10FFFF => {}
-            b'0'..=b'9' => {
-                index += 1;
-            }
-            b'\\' => {}
-            _ => break 'l,
-        }
-    }
-
+    let (rest, ident) = token::parse_hash_token(s)?;
     match ident {
-        token::Token::Ident(ident) => Ok((rest, Selector::ID(ident))),
+        token::Token::Hash(ident, HashTokenFlag::ID) => Ok((rest, Selector::ID(ident))),
         _ => Err(()),
     }
 }
@@ -404,6 +657,17 @@ impl Codepoint {
             bytelength,
         }))
     }
+
+    ///
+    ///@todo should this propagate the error?
+    fn take(bytes: &[u8]) -> Option<(Self, &[u8])> {
+        if let Ok(Some(cp)) = Self::from_bytes(bytes) {
+            let l = cp.bytelength;
+            Some((cp, &bytes[l..]))
+        } else {
+            None
+        }
+    }
 }
 
 mod util {
@@ -441,34 +705,33 @@ mod tests {
     #[test]
     fn test_parse_class() {
         assert!(parse_class(b"foo").is_err());
-        assert!(parse_class(b".-foo").is_err());
         assert!(parse_class(b".1foo").is_err());
 
         let (rest, parsed) = parse_class(b"._-foo123.more").unwrap();
         assert_eq!(rest, b".more");
-        assert_eq!(parsed, Selector::Class("_-foo123"));
+        assert_eq!(parsed, Selector::Class("_-foo123".to_owned()));
 
         let (rest, parsed) = parse_class(b".CLASS abc").unwrap();
         assert_eq!(rest, b" abc");
-        assert_eq!(parsed, Selector::Class("CLASS"));
+        assert_eq!(parsed, Selector::Class("CLASS".to_owned()));
     }
 
     #[test]
     fn test_parse_id() {
         assert!(parse_id(b"foo").is_err());
-        assert!(parse_id(b"#-foo").is_err());
         assert!(parse_id(b"#1foo").is_err());
 
         let (rest, parsed) = parse_id(b"#_-foo123.more").unwrap();
         assert_eq!(rest, b".more");
-        assert_eq!(parsed, Selector::ID("_-foo123"));
+        assert_eq!(parsed, Selector::ID("_-foo123".to_owned()));
 
         let (rest, parsed) = parse_id(b"#ID abc").unwrap();
         assert_eq!(rest, b" abc");
-        assert_eq!(parsed, Selector::ID("ID"));
+        assert_eq!(parsed, Selector::ID("ID".to_owned()));
 
         let (rest, parsed) = parse_id(b"#\\31 23").unwrap();
-        assert_eq!(parsed, Selector::ID("123"));
+        assert!(rest.is_empty());
+        assert_eq!(parsed, Selector::ID("123".to_owned()));
     }
 
     #[test]
