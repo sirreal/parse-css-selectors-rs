@@ -1,6 +1,3 @@
-use core::panic;
-use std::str::from_utf8 as str_from_utf8;
-
 /// A parser for CSS selectors.
 ///
 /// https://www.w3.org/TR/selectors/
@@ -8,11 +5,11 @@ use std::str::from_utf8 as str_from_utf8;
 /// https://www.w3.org/tr/selectors/#parse-selector
 ///
 /// > 19.1. parse a selector
-/// > this section defines how to parse a selector from a string source. it returns either a complex selector list, or failure.
+/// >   this section defines how to parse a selector from a string source. it returns either a complex selector list, or failure.
 /// >
-/// > let selector be the result of parsing source as a <selector-list>. if this returns failure, it’s an invalid selector; return failure.
-/// > if selector is an invalid selector for any other reason (such as, for example, containing an undeclared namespace prefix), return failure.
-/// > otherwise, return selector.
+/// >     let selector be the result of parsing source as a <selector-list>. if this returns failure, it’s an invalid selector; return failure.
+/// >     if selector is an invalid selector for any other reason (such as, for example, containing an undeclared namespace prefix), return failure.
+/// >     otherwise, return selector.
 ///
 /// https://www.w3.org/TR/selectors/#typedef-selector-list
 ///
@@ -21,51 +18,32 @@ use std::str::from_utf8 as str_from_utf8;
 /// > Selectors are parsed according to the following grammar:
 /// >
 /// > <selector-list> = <complex-selector-list>
-/// >
 /// > <complex-selector-list> = <complex-selector>#
-/// >
 /// > <compound-selector-list> = <compound-selector>#
-/// >
 /// > <simple-selector-list> = <simple-selector>#
-/// >
 /// > <relative-selector-list> = <relative-selector>#
 /// >
-/// >
 /// > <complex-selector> = <compound-selector> [ <combinator>? <compound-selector> ]*
-/// >
 /// > <relative-selector> = <combinator>? <complex-selector>
-/// >
 /// > <compound-selector> = [ <type-selector>? <subclass-selector>*
 /// >                         [ <pseudo-element-selector> <pseudo-class-selector>* ]* ]!
-/// >
 /// > <simple-selector> = <type-selector> | <subclass-selector>
 /// >
-/// >
 /// > <combinator> = '>' | '+' | '~' | [ '|' '|' ]
-/// >
 /// > <type-selector> = <wq-name> | <ns-prefix>? '*'
-/// >
 /// > <ns-prefix> = [ <ident-token> | '*' ]? '|'
-/// >
 /// > <wq-name> = <ns-prefix>? <ident-token>
-/// >
 /// > <subclass-selector> = <id-selector> | <class-selector> |
 /// >                       <attribute-selector> | <pseudo-class-selector>
 /// >
 /// > <id-selector> = <hash-token>
-/// >
 /// > <class-selector> = '.' <ident-token>
-/// >
 /// > <attribute-selector> = '[' <wq-name> ']' |
 /// >                        '[' <wq-name> <attr-matcher> [ <string-token> | <ident-token> ] <attr-modifier>? ']'
-/// >
 /// > <attr-matcher> = [ '~' | '|' | '^' | '$' | '*' ]? '='
-/// >
 /// > <attr-modifier> = i | s
-/// >
 /// > <pseudo-class-selector> = ':' <ident-token> |
 /// >                           ':' <function-token> <any-value> ')'
-/// >
 /// > <pseudo-element-selector> = ':' <pseudo-class-selector>
 ///
 /// https://www.w3.org/TR/2022/WD-selectors-4-20221111/#parse-as-a-forgiving-selector-list
@@ -98,13 +76,6 @@ use std::str::from_utf8 as str_from_utf8;
 ///
 /// https://www.w3.org/TR/css-syntax-3/#input-preprocessing
 ///
-/// > To filter code points from a stream of (unfiltered) code points input:
-/// > Replace any U+000D CARRIAGE RETURN (CR) code points, U+000C FORM FEED (FF) code points, or
-/// > pairs of U+000D CARRIAGE RETURN (CR) followed by U+000A LINE FEED (LF) in input by a single
-/// > U+000A LINE FEED (LF) code point.
-/// > Replace any U+0000 NULL or surrogate code points in input with
-/// > U+FFFD REPLACEMENT CHARACTER (�).
-///
 /// # Examples
 ///
 /// ```
@@ -121,17 +92,12 @@ use std::str::from_utf8 as str_from_utf8;
 
 /// These tokens are mentioned in parsing selectors:
 
-/// > <ident-token>
-/// >
-/// > <hash-token>
-/// >
-/// > <string-token>
-/// >
-/// > <function-token>
+/// - <ident-token>
+/// - <hash-token>
+/// - <string-token>
+/// - <function-token>
 ///
 /// > https://www.w3.org/TR/css-syntax-3/#consume-token
-///
-///
 
 pub struct Parser {
     data: String,
@@ -163,50 +129,131 @@ impl<'a> Parser {
     /// > Replace any U+000D CARRIAGE RETURN (CR) code points, U+000C FORM FEED (FF) code points, or pairs of U+000D CARRIAGE RETURN (CR) followed by U+000A LINE FEED (LF) in input by a single U+000A LINE FEED (LF) code point.
     /// > Replace any U+0000 NULL or surrogate code points in input with U+FFFD REPLACEMENT CHARACTER (�).
     fn normalize(input: &str) -> String {
-        let out = input
+        input
             .replace("\u{000D}\u{000A}", "\u{000A}")
             .replace("\u{000D}", "\u{000A}")
             .replace("\u{000C}", "\u{000A}")
-            .replace("\u{0000}", "\u{FFFD}");
-        out
+            .replace("\u{0000}", "\u{FFFD}")
     }
 }
 
-//impl Iterator for Parser {
-//    type Item = Result<Selector, ()>;
-//
-//    fn next(&mut self) -> Option<Self::Item> {
-//        if self.data.is_empty() {
-//            return None;
-//        }
-//
-//        match self.data {
-//            _ => panic!("Unimplemented {:?}", self.data),
-//        }
-//    }
-//}
+mod selector {
+    use super::*;
 
-//fn parse_comment(s: &[u8]) -> R<Token> {
-//    let (s, _) = util::parse_bytes(s, b"<!--")?;
-//    let mut i = 0;
-//    while s.len() >= i + 3 {
-//        if &s[i..i + 3] == b"-->" {
-//            return Ok((
-//                &s[i + 3..],
-//                Token::Comment {
-//                    text: str_from_utf8(&s[..i]).unwrap(),
-//                },
-//            ));
-//        }
-//        i += 1;
-//    }
-//    Err(())
-//}
+    /// Selectors
+    ///
+    /// >   this section defines how to parse a selector from a string source. it returns either a complex selector list, or failure.
+    /// > …
+    /// > <complex-selector-list> = <complex-selector>#
+    /// >
+    /// > <complex-selector> = <compound-selector> [ <combinator>? <compound-selector> ]*
+    /// > <compound-selector> = [ <type-selector>? <subclass-selector>*
+    /// >                         [ <pseudo-element-selector> <pseudo-class-selector>* ]* ]!
+    /// >
+    /// > <combinator> = '>' | '+' | '~' | [ '|' '|' ]
+    /// > <type-selector> = <wq-name> | <ns-prefix>? '*'
+    /// > <ns-prefix> = [ <ident-token> | '*' ]? '|'
+    /// > <wq-name> = <ns-prefix>? <ident-token>
+    /// > <subclass-selector> = <id-selector> | <class-selector> |
+    /// >                       <attribute-selector> | <pseudo-class-selector>
+    /// >
+    /// > <id-selector> = <hash-token>
+    /// > <class-selector> = '.' <ident-token>
+    /// > <attribute-selector> = '[' <wq-name> ']' |
+    /// >                        '[' <wq-name> <attr-matcher> [ <string-token> | <ident-token> ] <attr-modifier>? ']'
+    /// > <attr-matcher> = [ '~' | '|' | '^' | '$' | '*' ]? '='
+    /// > <attr-modifier> = i | s
+    /// > <pseudo-class-selector> = ':' <ident-token> |
+    /// >                           ':' <function-token> <any-value> ')'
+    #[derive(Debug, PartialEq)]
+    enum Selector {
+        Type(),
+        Class(String),
+        ID(String),
+        Attribute(()),
+        PseudoClass(()),
+    }
 
-#[derive(Debug, PartialEq)]
-enum Selector {
-    Class(String),
-    ID(String),
+    enum Combinator {
+        Descendant,
+        Child,
+        NextSibling,
+        SubsequentSibling,
+    }
+
+    struct CompoundSelector {
+        type_selector: Option<Selector>,
+        subclass_selectors: Vec<Selector>,
+        pseudo_class_selector: Option<Selector>,
+        // Pseudo-element selectors are not relevant for our purposes.
+        // pseudo_element_selector: Option<Selector>,
+    }
+
+    struct ComplexSelector {
+        selector: CompoundSelector,
+        combined_selector: Option<(Combinator, CompoundSelector)>,
+    }
+
+    fn parse_class(s: &[u8]) -> R<Selector> {
+        if s.len() < 2 {
+            return Err(());
+        }
+
+        if s[0] != b'.' {
+            return Err(());
+        }
+
+        let (rest, ident) = token::parse_ident(&s[1..])?;
+        match ident {
+            token::Token::Ident(ident) => Ok((rest, Selector::Class(ident))),
+            _ => Err(()),
+        }
+    }
+
+    fn parse_id(s: &[u8]) -> R<Selector> {
+        let (rest, ident) = token::parse_hash_token(s)?;
+        match ident {
+            token::Token::Hash(ident, HashTokenFlag::ID) => Ok((rest, Selector::ID(ident))),
+            _ => Err(()),
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn test_parse_class() {
+            assert!(parse_class(b"foo").is_err());
+            assert!(parse_class(b".1foo").is_err());
+
+            let (rest, parsed) = parse_class(b"._-foo123.more").unwrap();
+            assert_eq!(rest, b".more");
+            assert_eq!(parsed, Selector::Class("_-foo123".to_owned()));
+
+            let (rest, parsed) = parse_class(b".CLASS abc").unwrap();
+            assert_eq!(rest, b" abc");
+            assert_eq!(parsed, Selector::Class("CLASS".to_owned()));
+        }
+
+        #[test]
+        fn test_parse_id() {
+            assert!(parse_id(b"foo").is_err());
+            assert!(parse_id(b"#1foo").is_err());
+
+            let (rest, parsed) = parse_id(b"#_-foo123.more").unwrap();
+            assert_eq!(rest, b".more");
+            assert_eq!(parsed, Selector::ID("_-foo123".to_owned()));
+
+            let (rest, parsed) = parse_id(b"#ID abc").unwrap();
+            assert_eq!(rest, b" abc");
+            assert_eq!(parsed, Selector::ID("ID".to_owned()));
+
+            let (rest, parsed) = parse_id(b"#\\31 23").unwrap();
+            assert!(rest.is_empty());
+            assert_eq!(parsed, Selector::ID("123".to_owned()));
+        }
+    }
 }
 
 mod token {
@@ -221,9 +268,11 @@ mod token {
     pub(super) enum Token<'a> {
         Ident(String),
         Function(&'a str),
-        AtKeyword(&'a str),
         Hash(String, HashTokenFlag),
         String(&'a str),
+        // The reset of these tokens are not relevant for CSS selectors.
+        /*
+        AtKeyword(&'a str),
         BadString,
         URL(&'a str),
         BadURL,
@@ -243,6 +292,7 @@ mod token {
         ParenClose,
         CurlyBraceOpen,
         CurlyBraceClose,
+        */
     }
 
     fn is_non_ascii(cp: &Codepoint) -> bool {
@@ -566,30 +616,6 @@ mod token {
     }
 }
 
-fn parse_class(s: &[u8]) -> R<Selector> {
-    if s.len() < 2 {
-        return Err(());
-    }
-
-    if s[0] != b'.' {
-        return Err(());
-    }
-
-    let (rest, ident) = token::parse_ident(&s[1..])?;
-    match ident {
-        token::Token::Ident(ident) => Ok((rest, Selector::Class(ident))),
-        _ => Err(()),
-    }
-}
-
-fn parse_id(s: &[u8]) -> R<Selector> {
-    let (rest, ident) = token::parse_hash_token(s)?;
-    match ident {
-        token::Token::Hash(ident, HashTokenFlag::ID) => Ok((rest, Selector::ID(ident))),
-        _ => Err(()),
-    }
-}
-
 impl From<UTF8Error> for () {
     fn from(_: UTF8Error) {}
 }
@@ -658,7 +684,6 @@ impl Codepoint {
         }))
     }
 
-    ///
     ///@todo should this propagate the error?
     fn take(bytes: &[u8]) -> Option<(Self, &[u8])> {
         if let Ok(Some(cp)) = Self::from_bytes(bytes) {
@@ -701,38 +726,6 @@ mod util {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn test_parse_class() {
-        assert!(parse_class(b"foo").is_err());
-        assert!(parse_class(b".1foo").is_err());
-
-        let (rest, parsed) = parse_class(b"._-foo123.more").unwrap();
-        assert_eq!(rest, b".more");
-        assert_eq!(parsed, Selector::Class("_-foo123".to_owned()));
-
-        let (rest, parsed) = parse_class(b".CLASS abc").unwrap();
-        assert_eq!(rest, b" abc");
-        assert_eq!(parsed, Selector::Class("CLASS".to_owned()));
-    }
-
-    #[test]
-    fn test_parse_id() {
-        assert!(parse_id(b"foo").is_err());
-        assert!(parse_id(b"#1foo").is_err());
-
-        let (rest, parsed) = parse_id(b"#_-foo123.more").unwrap();
-        assert_eq!(rest, b".more");
-        assert_eq!(parsed, Selector::ID("_-foo123".to_owned()));
-
-        let (rest, parsed) = parse_id(b"#ID abc").unwrap();
-        assert_eq!(rest, b" abc");
-        assert_eq!(parsed, Selector::ID("ID".to_owned()));
-
-        let (rest, parsed) = parse_id(b"#\\31 23").unwrap();
-        assert!(rest.is_empty());
-        assert_eq!(parsed, Selector::ID("123".to_owned()));
-    }
 
     #[test]
     fn test_codepoint_1byte() {
