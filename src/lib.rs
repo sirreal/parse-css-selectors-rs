@@ -172,13 +172,62 @@ mod selector {
         Type(TypeSelector),
         Class(String),
         ID(String),
-        Attribute(()),
+        Attribute(
+            WQName,
+            Option<(
+                AttributeMatcher,
+                String,
+                Option<AttributeMatcherCaseSensitivity>,
+            )>,
+        ),
         PseudoClass(()),
     }
 
     #[derive(Debug, PartialEq)]
+    enum AttributeMatcherCaseSensitivity {
+        CaseSensitive,
+        CaseInsensitive,
+    }
+
+    #[derive(Debug, PartialEq)]
+    enum AttributeMatcher {
+        /// [attr=value]
+        /// Represents elements with an attribute name of attr whose value is exactly value.
+        Exact,
+
+        /// [attr~=value]
+        /// Represents elements with an attribute name of attr whose value is a
+        /// whitespace-separated list of words, one of which is exactly value.
+        OneOfExact,
+
+        /// [attr|=value]
+        /// Represents elements with an attribute name of attr whose value can be exactly value or
+        /// can begin with value immediately followed by a hyphen, - (U+002D). It is often used for
+        /// language subcode matches.
+        ExactOrExactWithHyphen,
+
+        /// [attr^=value]
+        /// Represents elements with an attribute name of attr whose value is prefixed (preceded)
+        /// by value.
+        PrefixedBy,
+
+        /// [attr$=value]
+        /// Represents elements with an attribute name of attr whose value is suffixed (followed)
+        /// by value.
+        SuffixedBy,
+
+        /// [attr*=value]
+        /// Represents elements with an attribute name of attr whose value contains at least one
+        /// occurrence of value within the string.
+        Contains,
+    }
+
+    #[derive(Debug, PartialEq)]
+    struct WQName(String, Option<NamespacePrefix>);
+
+    #[derive(Debug, PartialEq)]
     enum TypeSelector {
-        Type(String, Option<NamespacePrefix>),
+        Type(WQName),
         Any(Option<NamespacePrefix>),
     }
 
@@ -208,6 +257,14 @@ mod selector {
         combined_selector: Option<(Combinator, CompoundSelector)>,
     }
 
+    fn skip_whitespace(bytes: &[u8]) -> &[u8] {
+        let mut bytes = bytes;
+        while !bytes.is_empty() && matches!(bytes[0], 0x0020 | 0x0009 | 0x000A | 0x000D | 0x000C) {
+            bytes = &bytes[1..];
+        }
+        bytes
+    }
+
     fn parse_type_selector(bytes: &[u8]) -> R<Selector> {
         if bytes.is_empty() {
             return Err(());
@@ -221,7 +278,7 @@ mod selector {
                 if let Ok((bytes, token::Token::Ident(ident))) = token::parse_ident(bytes) {
                     return Ok((
                         bytes,
-                        Selector::Type(TypeSelector::Type(ident, Some(prefix))),
+                        Selector::Type(TypeSelector::Type(WQName(ident, Some(prefix)))),
                     ));
                 };
             }
@@ -232,9 +289,10 @@ mod selector {
         }
 
         match token::parse_ident(bytes)? {
-            (bytes, token::Token::Ident(ident)) => {
-                Ok((bytes, Selector::Type(TypeSelector::Type(ident, None))))
-            }
+            (bytes, token::Token::Ident(ident)) => Ok((
+                bytes,
+                Selector::Type(TypeSelector::Type(WQName(ident, None))),
+            )),
             _ => Err(()),
         }
     }
@@ -249,13 +307,73 @@ mod selector {
         }
 
         let (bytes, ident) = token::parse_ident(bytes)?;
-        if bytes[0] != b'|' {
+        if bytes.is_empty() || bytes[0] != b'|' {
             return Err(());
         }
         match ident {
             token::Token::Ident(ident) => Ok((&bytes[1..], NamespacePrefix::Namespace(ident))),
             _ => Err(()),
         }
+    }
+
+    /// <attribute-selector> =
+    ///   '[' <wq-name> ']' |
+    ///   '[' <wq-name> <attr-matcher> [ <string-token> | <ident-token> ] <attr-modifier>? ']'
+    fn parse_attribute_selector(bytes: &[u8]) -> R<Selector> {
+        // Need at least 3 bytes [x]
+        if bytes.len() < 3 {
+            return Err(());
+        }
+
+        if bytes[0] != b'[' {
+            return Err(());
+        }
+        let bytes = skip_whitespace(&bytes[1..]);
+        if bytes.is_empty() {
+            return Err(());
+        }
+
+        let (bytes, wq_name) = if let Ok((bytes, prefix)) = parse_namespace_prefix(bytes) {
+            if bytes.is_empty() {
+                return Err(());
+            }
+
+            match token::parse_ident(bytes)? {
+                (bytes, token::Token::Ident(ident)) => (bytes, WQName(ident, Some(prefix))),
+                _ => unreachable!(),
+            }
+        } else {
+            match token::parse_ident(bytes)? {
+                (bytes, token::Token::Ident(ident)) => (bytes, WQName(ident, None)),
+                _ => unreachable!(),
+            }
+        };
+
+        let bytes = skip_whitespace(bytes);
+        if bytes.is_empty() {
+            return Err(());
+        }
+
+        let matcher = match bytes[0] {
+            b']' => None,
+            b'=' => Some(AttributeMatcher::Exact),
+
+            b'~' => Some(AttributeMatcher::OneOfExact),
+            b'|' => Some(AttributeMatcher::ExactOrExactWithHyphen),
+            b'^' => Some(AttributeMatcher::PrefixedBy),
+            b'$' => Some(AttributeMatcher::SuffixedBy),
+            b'*' => Some(AttributeMatcher::Contains),
+            _ => {
+                return Err(());
+            }
+        };
+
+        let bytes = &bytes[1..];
+        if matcher.is_none() {
+            return Ok((bytes, Selector::Attribute(wq_name, None)));
+        }
+
+        todo!("matcher handling {:?}", matcher);
     }
 
     fn parse_class(bytes: &[u8]) -> R<Selector> {
@@ -361,10 +479,10 @@ mod selector {
             assert_eq!(rest, b"#foo.bar");
             assert_eq!(
                 parsed,
-                Selector::Type(TypeSelector::Type(
+                Selector::Type(TypeSelector::Type(WQName(
                     "foo-element".to_owned(),
                     Some(NamespacePrefix::Namespace("svg-namespace".to_owned()))
-                ))
+                )))
             );
 
             let (rest, parsed) = parse_type_selector(b"*|*#foo.bar").unwrap();
@@ -372,6 +490,53 @@ mod selector {
             assert_eq!(
                 parsed,
                 Selector::Type(TypeSelector::Any(Some(NamespacePrefix::Any)))
+            );
+        }
+
+        #[test]
+        fn test_parse_attribute_selector() {
+            assert!(parse_attribute_selector(b"foo").is_err());
+            assert!(parse_attribute_selector(b"[foo").is_err());
+            assert!(parse_attribute_selector(b"[#foo]").is_err());
+            assert!(parse_attribute_selector(b"[*|*]").is_err());
+            assert!(parse_attribute_selector(b"[ns|*]").is_err());
+            assert!(parse_attribute_selector(b"[* |att]").is_err());
+            assert!(parse_attribute_selector(b"[*| att]").is_err());
+            assert!(parse_attribute_selector(b"[att * =]").is_err());
+            assert!(parse_attribute_selector(b"[att * =]").is_err());
+
+            let (rest, parsed) = parse_attribute_selector(b"[href]").unwrap();
+            assert!(rest.is_empty());
+            assert_eq!(
+                parsed,
+                Selector::Attribute(WQName("href".to_owned(), None), None)
+            );
+
+            let (rest, parsed) = parse_attribute_selector(b"[\n href\t\r]").unwrap();
+            assert!(rest.is_empty());
+            assert_eq!(
+                parsed,
+                Selector::Attribute(WQName("href".to_owned(), None), None)
+            );
+
+            let (rest, parsed) = parse_attribute_selector(b"[xlink|href]").unwrap();
+            assert!(rest.is_empty());
+            assert_eq!(
+                parsed,
+                Selector::Attribute(
+                    WQName(
+                        "href".to_owned(),
+                        Some(NamespacePrefix::Namespace("xlink".to_owned()))
+                    ),
+                    None
+                )
+            );
+
+            let (rest, parsed) = parse_attribute_selector(b"[*|href]").unwrap();
+            assert!(rest.is_empty());
+            assert_eq!(
+                parsed,
+                Selector::Attribute(WQName("href".to_owned(), Some(NamespacePrefix::Any)), None)
             );
         }
     }
