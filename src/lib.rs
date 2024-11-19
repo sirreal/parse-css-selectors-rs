@@ -369,11 +369,71 @@ mod selector {
         };
 
         let bytes = &bytes[1..];
-        if matcher.is_none() {
+        let matcher = if let Some(matcher) = matcher {
+            matcher
+        } else {
             return Ok((bytes, Selector::Attribute(wq_name, None)));
+        };
+
+        if bytes.is_empty() {
+            return Err(());
         }
 
-        todo!("matcher handling {:?}", matcher);
+        let bytes = skip_whitespace(match matcher {
+            AttributeMatcher::Exact => bytes,
+            _ => {
+                if bytes[0] != b'=' {
+                    return Err(());
+                }
+                &bytes[1..]
+            }
+        });
+
+        if bytes.is_empty() {
+            return Err(());
+        }
+
+        // string token
+        let (bytes, mattcher_value) = if bytes[0] == b'\'' || bytes[0] == b'"' {
+            todo!("attribute string token");
+        } else {
+            let (bytes, ident) = token::parse_ident(bytes)?;
+            match ident {
+                token::Token::Ident(ident) => (bytes, ident),
+                _ => unreachable!(),
+            }
+        };
+
+        let bytes = skip_whitespace(bytes);
+        if bytes.is_empty() {
+            return Err(());
+        }
+
+        let (bytes, case_sensitivity) = match bytes[0] {
+            pat @ (b'i' | b's') => {
+                let bytes = skip_whitespace(&bytes[1..]);
+                if bytes.is_empty() || bytes[0] != b']' {
+                    return Err(());
+                }
+                (
+                    &bytes[1..],
+                    Some(match pat {
+                        b'i' => AttributeMatcherCaseSensitivity::CaseInsensitive,
+                        b's' => AttributeMatcherCaseSensitivity::CaseSensitive,
+                        _ => unreachable!(),
+                    }),
+                )
+            }
+            b']' => (&bytes[1..], None),
+            _ => {
+                return Err(());
+            }
+        };
+
+        Ok((
+            bytes,
+            Selector::Attribute(wq_name, Some((matcher, mattcher_value, case_sensitivity))),
+        ))
     }
 
     fn parse_class(bytes: &[u8]) -> R<Selector> {
@@ -537,6 +597,98 @@ mod selector {
             assert_eq!(
                 parsed,
                 Selector::Attribute(WQName("href".to_owned(), Some(NamespacePrefix::Any)), None)
+            );
+
+            let (rest, parsed) = parse_attribute_selector(b"[href=foo]").unwrap();
+            assert!(rest.is_empty());
+            assert_eq!(
+                parsed,
+                Selector::Attribute(
+                    WQName("href".to_owned(), None),
+                    Some((AttributeMatcher::Exact, "foo".to_owned(), None))
+                )
+            );
+
+            let (rest, parsed) = parse_attribute_selector(b"[href \n =   bar   ]").unwrap();
+            assert!(rest.is_empty());
+            assert_eq!(
+                parsed,
+                Selector::Attribute(
+                    WQName("href".to_owned(), None),
+                    Some((AttributeMatcher::Exact, "bar".to_owned(), None))
+                )
+            );
+
+            let (rest, parsed) = parse_attribute_selector(b"[href \n ^=   baz   ]").unwrap();
+            assert!(rest.is_empty());
+            assert_eq!(
+                parsed,
+                Selector::Attribute(
+                    WQName("href".to_owned(), None),
+                    Some((AttributeMatcher::PrefixedBy, "baz".to_owned(), None))
+                )
+            );
+
+            let (rest, parsed) = parse_attribute_selector(b"[match = insensitive i]").unwrap();
+            assert!(rest.is_empty());
+            assert_eq!(
+                parsed,
+                Selector::Attribute(
+                    WQName("match".to_owned(), None),
+                    Some((
+                        AttributeMatcher::Exact,
+                        "insensitive".to_owned(),
+                        Some(AttributeMatcherCaseSensitivity::CaseInsensitive)
+                    ))
+                )
+            );
+
+            let (rest, parsed) = parse_attribute_selector(b"[match = sensitive s]").unwrap();
+            assert!(rest.is_empty());
+            assert_eq!(
+                parsed,
+                Selector::Attribute(
+                    WQName("match".to_owned(), None),
+                    Some((
+                        AttributeMatcher::Exact,
+                        "sensitive".to_owned(),
+                        Some(AttributeMatcherCaseSensitivity::CaseSensitive)
+                    ))
+                )
+            );
+
+            let (rest, parsed) = parse_attribute_selector(b"[match = \"quoted[][]\"]").unwrap();
+            assert!(rest.is_empty());
+            assert_eq!(
+                parsed,
+                Selector::Attribute(
+                    WQName("match".to_owned(), None),
+                    Some((AttributeMatcher::PrefixedBy, "quoted[][]".to_owned(), None))
+                )
+            );
+
+            let (rest, parsed) = parse_attribute_selector(b"[match = 'quoted!{}']").unwrap();
+            assert!(rest.is_empty());
+            assert_eq!(
+                parsed,
+                Selector::Attribute(
+                    WQName("match".to_owned(), None),
+                    Some((AttributeMatcher::PrefixedBy, "quoted![]".to_owned(), None))
+                )
+            );
+
+            let (rest, parsed) = parse_attribute_selector(b"[match = 'quoted's]").unwrap();
+            assert!(rest.is_empty());
+            assert_eq!(
+                parsed,
+                Selector::Attribute(
+                    WQName("href".to_owned(), None),
+                    Some((
+                        AttributeMatcher::PrefixedBy,
+                        "foo".to_owned(),
+                        Some(AttributeMatcherCaseSensitivity::CaseSensitive)
+                    ))
+                )
             );
         }
     }
