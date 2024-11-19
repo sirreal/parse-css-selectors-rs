@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 /// A parser for CSS selectors.
 ///
 /// https://www.w3.org/TR/selectors/
@@ -167,11 +169,23 @@ mod selector {
     /// >                           ':' <function-token> <any-value> ')'
     #[derive(Debug, PartialEq)]
     enum Selector {
-        Type(),
+        Type(TypeSelector),
         Class(String),
         ID(String),
         Attribute(()),
         PseudoClass(()),
+    }
+
+    #[derive(Debug, PartialEq)]
+    enum TypeSelector {
+        Type(String, Option<NamespacePrefix>),
+        Any(Option<NamespacePrefix>),
+    }
+
+    #[derive(Debug, PartialEq)]
+    enum NamespacePrefix {
+        Any,
+        Namespace(String),
     }
 
     enum Combinator {
@@ -194,26 +208,76 @@ mod selector {
         combined_selector: Option<(Combinator, CompoundSelector)>,
     }
 
-    fn parse_class(s: &[u8]) -> R<Selector> {
-        if s.len() < 2 {
+    fn parse_type_selector(bytes: &[u8]) -> R<Selector> {
+        if bytes.is_empty() {
             return Err(());
         }
 
-        if s[0] != b'.' {
-            return Err(());
+        if let Ok((bytes, prefix)) = parse_namespace_prefix(bytes) {
+            if !bytes.is_empty() {
+                if bytes[0] == b'*' {
+                    return Ok((&bytes[1..], Selector::Type(TypeSelector::Any(Some(prefix)))));
+                }
+                if let Ok((bytes, token::Token::Ident(ident))) = token::parse_ident(bytes) {
+                    return Ok((
+                        bytes,
+                        Selector::Type(TypeSelector::Type(ident, Some(prefix))),
+                    ));
+                };
+            }
         }
 
-        let (rest, ident) = token::parse_ident(&s[1..])?;
-        match ident {
-            token::Token::Ident(ident) => Ok((rest, Selector::Class(ident))),
+        if bytes[0] == b'*' {
+            return Ok((&bytes[1..], Selector::Type(TypeSelector::Any(None))));
+        }
+
+        match token::parse_ident(bytes)? {
+            (bytes, token::Token::Ident(ident)) => {
+                Ok((bytes, Selector::Type(TypeSelector::Type(ident, None))))
+            }
             _ => Err(()),
         }
     }
 
-    fn parse_id(s: &[u8]) -> R<Selector> {
-        let (rest, ident) = token::parse_hash_token(s)?;
+    fn parse_namespace_prefix(bytes: &[u8]) -> R<NamespacePrefix> {
+        if bytes.len() < 2 {
+            return Err(());
+        }
+
+        if bytes[0] == b'*' && bytes[1] == b'|' {
+            return Ok((&bytes[2..], NamespacePrefix::Any));
+        }
+
+        let (bytes, ident) = token::parse_ident(bytes)?;
+        if bytes[0] != b'|' {
+            return Err(());
+        }
         match ident {
-            token::Token::Hash(ident, HashTokenFlag::ID) => Ok((rest, Selector::ID(ident))),
+            token::Token::Ident(ident) => Ok((&bytes[1..], NamespacePrefix::Namespace(ident))),
+            _ => Err(()),
+        }
+    }
+
+    fn parse_class(bytes: &[u8]) -> R<Selector> {
+        if bytes.len() < 2 {
+            return Err(());
+        }
+
+        if bytes[0] != b'.' {
+            return Err(());
+        }
+
+        let (bytes, ident) = token::parse_ident(&bytes[1..])?;
+        match ident {
+            token::Token::Ident(ident) => Ok((bytes, Selector::Class(ident))),
+            _ => Err(()),
+        }
+    }
+
+    fn parse_id(bytes: &[u8]) -> R<Selector> {
+        let (bytes, ident) = token::parse_hash_token(bytes)?;
+        match ident {
+            token::Token::Hash(ident, HashTokenFlag::ID) => Ok((bytes, Selector::ID(ident))),
             _ => Err(()),
         }
     }
@@ -221,6 +285,30 @@ mod selector {
     #[cfg(test)]
     mod tests {
         use super::*;
+
+        #[test]
+        fn test_parse_namespace_prefix() {
+            assert!(parse_namespace_prefix(b"|*").is_err());
+
+            let (rest, prefix) = parse_namespace_prefix(b"*|").unwrap();
+            assert!(rest.is_empty());
+            assert_eq!(prefix, NamespacePrefix::Any);
+
+            let (rest, prefix) = parse_namespace_prefix(b"svg|").unwrap();
+            assert!(rest.is_empty());
+            assert_eq!(prefix, NamespacePrefix::Namespace("svg".to_owned()));
+
+            let (rest, prefix) = parse_namespace_prefix(b"svg-namespace|").unwrap();
+            assert!(rest.is_empty());
+            assert_eq!(
+                prefix,
+                NamespacePrefix::Namespace("svg-namespace".to_owned())
+            );
+
+            let (rest, prefix) = parse_namespace_prefix(b"svg|foo").unwrap();
+            assert_eq!(rest, b"foo");
+            assert_eq!(prefix, NamespacePrefix::Namespace("svg".to_owned()));
+        }
 
         #[test]
         fn test_parse_class() {
@@ -252,6 +340,39 @@ mod selector {
             let (rest, parsed) = parse_id(b"#\\31 23").unwrap();
             assert!(rest.is_empty());
             assert_eq!(parsed, Selector::ID("123".to_owned()));
+        }
+
+        #[test]
+        fn test_parse_type_selector() {
+            assert!(parse_type_selector(b"|*").is_err());
+
+            let (rest, parsed) = parse_type_selector(b"*|").unwrap();
+            assert_eq!(rest, b"|");
+            assert_eq!(parsed, Selector::Type(TypeSelector::Any(None)));
+
+            let (rest, parsed) = parse_type_selector(b"*|*#foo.bar").unwrap();
+            assert_eq!(rest, b"#foo.bar");
+            assert_eq!(
+                parsed,
+                Selector::Type(TypeSelector::Any(Some(NamespacePrefix::Any)))
+            );
+
+            let (rest, parsed) = parse_type_selector(b"svg-namespace|foo-element#foo.bar").unwrap();
+            assert_eq!(rest, b"#foo.bar");
+            assert_eq!(
+                parsed,
+                Selector::Type(TypeSelector::Type(
+                    "foo-element".to_owned(),
+                    Some(NamespacePrefix::Namespace("svg-namespace".to_owned()))
+                ))
+            );
+
+            let (rest, parsed) = parse_type_selector(b"*|*#foo.bar").unwrap();
+            assert_eq!(rest, b"#foo.bar");
+            assert_eq!(
+                parsed,
+                Selector::Type(TypeSelector::Any(Some(NamespacePrefix::Any)))
+            );
         }
     }
 }
@@ -321,11 +442,11 @@ mod token {
     /// https://www.w3.org/TR/css-syntax-3/#starts-with-a-valid-escape
     ///
     /// @todo this does not check whether the second codepoint is valid.
-    fn next_two_are_valid_escape(s: &[u8]) -> bool {
-        if s.len() < 2 {
+    fn next_two_are_valid_escape(bytes: &[u8]) -> bool {
+        if bytes.len() < 2 {
             return false;
         }
-        s[0] == b'\\' && s[1] != b'\n'
+        bytes[0] == b'\\' && bytes[1] != b'\n'
     }
 
     /// > 4.3.9. Check if three code points would start an ident sequence
@@ -345,19 +466,19 @@ mod token {
     /// >   Return false.
     ///
     /// https://www.w3.org/TR/css-syntax-3/#would-start-an-identifier
-    fn check_if_three_code_points_would_start_an_ident_sequence(s: &[u8]) -> bool {
-        if s.is_empty() {
+    fn check_if_three_code_points_would_start_an_ident_sequence(bytes: &[u8]) -> bool {
+        if bytes.is_empty() {
             return false;
         }
 
         // > U+005C REVERSE SOLIDUS (\)
-        if s[0] == b'\\' {
-            return next_two_are_valid_escape(s);
+        if bytes[0] == b'\\' {
+            return next_two_are_valid_escape(bytes);
         }
 
         // > U+002D HYPHEN-MINUS
-        if s[0] == b'-' {
-            let after_initial_hyphen_minus = &s[1..];
+        if bytes[0] == b'-' {
+            let after_initial_hyphen_minus = &bytes[1..];
 
             // > If the second code point is… U+002D HYPHEN-MINUS… return true
             if after_initial_hyphen_minus[0] == b'-' {
@@ -382,7 +503,7 @@ mod token {
         // >   Return true.
         // > anything else
         // >   Return false.
-        Codepoint::take(s)
+        Codepoint::take(bytes)
             .map(|(cp, _)| is_ident_start(&cp))
             .unwrap_or(false)
     }
@@ -404,13 +525,13 @@ mod token {
     /// >   This is a parse error. Return U+FFFD REPLACEMENT CHARACTER (�).
     /// > anything else
     /// >   Return the current input code point.
-    fn consume_escaped_codepoint(s: &[u8]) -> (char, &[u8]) {
-        if s[0].is_ascii_hexdigit() {
+    fn consume_escaped_codepoint(bytes: &[u8]) -> (char, &[u8]) {
+        if bytes[0].is_ascii_hexdigit() {
             let mut hex_ends = 1;
-            while s.len() > hex_ends && hex_ends < 6 && s[hex_ends].is_ascii_hexdigit() {
+            while bytes.len() > hex_ends && hex_ends < 6 && bytes[hex_ends].is_ascii_hexdigit() {
                 hex_ends += 1;
             }
-            let hex_string = unsafe { std::str::from_utf8_unchecked(&s[..hex_ends]) };
+            let hex_string = unsafe { std::str::from_utf8_unchecked(&bytes[..hex_ends]) };
             let char_digit = u32::from_str_radix(hex_string, 16).unwrap();
 
             // > A surrogate is a leading surrogate or a trailing surrogate.
@@ -428,83 +549,86 @@ mod token {
             };
 
             // If the next input code point is whitespace, consume it as well.
-            if s.len() > hex_ends && matches!(s[hex_ends], b'\n' | b'\t' | b' ') {
+            if bytes.len() > hex_ends && matches!(bytes[hex_ends], b'\n' | b'\t' | b' ') {
                 hex_ends += 1;
             }
-            return (char, &s[hex_ends..]);
+            return (char, &bytes[hex_ends..]);
         }
 
-        Codepoint::take(s)
-            .map(|(cp, rest)| (cp.char, rest))
+        Codepoint::take(bytes)
+            .map(|(cp, bytes)| (cp.char, bytes))
             .expect("codepoint should be guaranteed valid here")
     }
 
-    /// > 4.3.11. Consume an ident sequence
-    /// > This section describes how to consume an ident sequence from a stream of code points. It returns a string containing the largest name that can be formed from adjacent code points in the stream, starting from the first.
-    /// >
-    /// > Note: This algorithm does not do the verification of the first few code points that are necessary to ensure the returned code points would constitute an <ident-token>. If that is the intended use, ensure that the stream starts with an ident sequence before calling this algorithm.
-    /// >
-    /// > Let result initially be an empty string.
-    /// >
-    /// > Repeatedly consume the next input code point from the stream:
-    /// >
-    /// > ident code point
-    /// > Append the code point to result.
-    /// > the stream starts with a valid escape
-    /// > Consume an escaped code point. Append the returned code point to result.
-    /// > anything else
-    /// > Reconsume the current input code point. Return result.
+    /// Parse an ident token
+    ///
+    /// \> 4.3.11. Consume an ident sequence
+    /// \> This section describes how to consume an ident sequence from a stream of code points. It returns a string containing the largest name that can be formed from adjacent code points in the stream, starting from the first.
+    /// \>
+    /// \> Note: This algorithm does not do the verification of the first few code points that are necessary to ensure the returned code points would constitute an <ident-token>. If that is the intended use, ensure that the stream starts with an ident sequence before calling this algorithm.
+    /// \>
+    /// \> Let result initially be an empty string.
+    /// \>
+    /// \> Repeatedly consume the next input code point from the stream:
+    /// \>
+    /// \> ident code point
+    /// \> Append the code point to result.
+    /// \> the stream starts with a valid escape
+    /// \> Consume an escaped code point. Append the returned code point to result.
+    /// \> anything else
+    /// \> Reconsume the current input code point. Return result.
+    ///
     /// https://www.w3.org/TR/css-syntax-3/#consume-name
-    pub(super) fn parse_ident(s: &[u8]) -> R<Token> {
-        if !check_if_three_code_points_would_start_an_ident_sequence(s) {
+    pub(super) fn parse_ident(bytes: &[u8]) -> R<Token> {
+        if !check_if_three_code_points_would_start_an_ident_sequence(bytes) {
             return Err(());
         }
 
         let mut ident = String::new();
 
-        let mut rest = s;
+        let mut bytes = bytes;
         loop {
-            if next_two_are_valid_escape(rest) {
-                let (char, next_rest) = consume_escaped_codepoint(&rest[1..]);
+            if next_two_are_valid_escape(bytes) {
+                let (char, next_rest) = consume_escaped_codepoint(&bytes[1..]);
                 ident.push(char);
-                rest = next_rest;
+                bytes = next_rest;
                 continue;
-            } else if let Some((cp, next_rest)) = Codepoint::take(rest) {
+            } else if let Some((cp, next_rest)) = Codepoint::take(bytes) {
                 if is_ident(&cp) {
                     ident.push(cp.char);
-                    rest = next_rest;
+                    bytes = next_rest;
                     continue;
                 }
             }
             break;
         }
 
-        Ok((rest, Token::Ident(ident)))
+        Ok((bytes, Token::Ident(ident)))
     }
 
     /// Tokenization of hash tokens
     ///
-    /// > U+0023 NUMBER SIGN (#)
-    /// >   If the next input code point is an ident code point or the next two input code points are a valid escape, then:
-    /// >     1. Create a <hash-token>.
-    /// >     2. If the next 3 input code points would start an ident sequence, set the
-    /// >        <hash-token>’s type flag to "id".
-    /// >     3. Consume an ident sequence, and set the <hash-token>’s value to the
-    ///          returned string.
-    /// >     4. Return the <hash-token>.
-    /// >   Otherwise, return a <delim-token> with its value set to the current input code point.
+    /// \> U+0023 NUMBER SIGN (#)
+    /// \>   If the next input code point is an ident code point or the next two input code points are a valid escape, then:
+    /// \>     1. Create a <hash-token>.
+    /// \>     2. If the next 3 input code points would start an ident sequence, set the
+    /// \>        <hash-token>’s type flag to "id".
+    /// \>     3. Consume an ident sequence, and set the <hash-token>’s value to the
+    /// \>        returned string.
+    /// \>     4. Return the <hash-token>.
+    /// \>   Otherwise, return a <delim-token> with its value set to the current input code point.
     ///
     /// This implementation is not interested in the <delim-token> that is not relevant for CSS
     /// selectors.
-    pub(super) fn parse_hash_token(s: &[u8]) -> R<Token> {
-        if s.len() < 2 || s[0] != b'#' {
+    pub(super) fn parse_hash_token(bytes: &[u8]) -> R<Token> {
+        if bytes.len() < 2 || bytes[0] != b'#' {
             return Err(());
         }
 
-        let rest = &s[1..];
-        if check_if_three_code_points_would_start_an_ident_sequence(rest) {
-            match parse_ident(rest)? {
-                (rest, Token::Ident(ident)) => Ok((rest, Token::Hash(ident, HashTokenFlag::ID))),
+        let bytes = &bytes[1..];
+        if check_if_three_code_points_would_start_an_ident_sequence(bytes) {
+            match parse_ident(bytes)? {
+                (bytes, Token::Ident(ident)) => Ok((bytes, Token::Hash(ident, HashTokenFlag::ID))),
                 _ => unreachable!(),
             }
         } else {
@@ -641,28 +765,28 @@ struct Codepoint {
 }
 
 impl Codepoint {
-    fn from_bytes(s: &[u8]) -> Result<Option<Self>, UTF8Error> {
-        if s.is_empty() {
+    fn from_bytes(bytes: &[u8]) -> Result<Option<Self>, UTF8Error> {
+        if bytes.is_empty() {
             return Ok(None);
         }
 
-        let (bytelength, mut value) = if s[0] & 0b1000_0000 == 0 {
-            (1, s[0] as u32)
-        } else if s[0] & 0b1110_0000 == 0b1100_0000 {
-            (2, (s[0] & UTF8_2_BYTE_BITMASK) as u32)
-        } else if s[0] & 0b1111_0000 == 0b1110_0000 {
-            (3, (s[0] & UTF8_3_BYTE_BITMASK) as u32)
-        } else if s[0] & 0b1111_1000 == 0b1111_0000 {
-            (4, (s[0] & UTF8_4_BYTE_BITMASK) as u32)
+        let (bytelength, mut value) = if bytes[0] & 0b1000_0000 == 0 {
+            (1, bytes[0] as u32)
+        } else if bytes[0] & 0b1110_0000 == 0b1100_0000 {
+            (2, (bytes[0] & UTF8_2_BYTE_BITMASK) as u32)
+        } else if bytes[0] & 0b1111_0000 == 0b1110_0000 {
+            (3, (bytes[0] & UTF8_3_BYTE_BITMASK) as u32)
+        } else if bytes[0] & 0b1111_1000 == 0b1111_0000 {
+            (4, (bytes[0] & UTF8_4_BYTE_BITMASK) as u32)
         } else {
             return Err(UTF8Error::InvalidInitialByte);
         };
 
-        if s.len() < bytelength {
+        if bytes.len() < bytelength {
             return Err(UTF8Error::MissingBytes);
         }
 
-        for byte in &s[1..bytelength] {
+        for byte in &bytes[1..bytelength] {
             if (byte & 0b1100_0000) == 0b1000_0000 {
                 value = (value << 6) | (byte & 0b0011_1111) as u32;
             } else {
@@ -692,34 +816,6 @@ impl Codepoint {
         } else {
             None
         }
-    }
-}
-
-mod util {
-    use super::R;
-
-    pub(super) fn parse_bytes<'a>(s: &'a [u8], bytes: &[u8]) -> R<'a, ()> {
-        if s.starts_with(bytes) {
-            Ok((&s[bytes.len()..], ()))
-        } else {
-            Err(())
-        }
-    }
-
-    pub(super) fn parse_s(s: &[u8]) -> R<()> {
-        let mut at = 0;
-        while s.len() > at && matches!(s[at], b'\x20' | b'\x09' | b'\x0D' | b'\x0A') {
-            at += 1;
-        }
-        if at > 0 {
-            Ok((&s[at..], ()))
-        } else {
-            Err(())
-        }
-    }
-
-    pub(super) fn parse_s_optional(s: &[u8]) -> R<()> {
-        parse_s(s).or(Ok((s, ())))
     }
 }
 
