@@ -379,14 +379,13 @@ mod selector {
             return Err(());
         }
 
-        let bytes = skip_whitespace(match matcher {
-            AttributeMatcher::Exact => bytes,
-            _ => {
-                if bytes[0] != b'=' {
-                    return Err(());
-                }
-                &bytes[1..]
+        let bytes = skip_whitespace(if matcher == AttributeMatcher::Exact {
+            bytes
+        } else {
+            if bytes[0] != b'=' {
+                return Err(());
             }
+            &bytes[1..]
         });
 
         if bytes.is_empty() {
@@ -395,11 +394,15 @@ mod selector {
 
         // string token
         let (bytes, mattcher_value) = if bytes[0] == b'\'' || bytes[0] == b'"' {
-            todo!("attribute string token");
+            let (bytes, string) = token::parse_string(bytes)?;
+            match string {
+                token::Token::String(value) => (bytes, value),
+                _ => unreachable!(),
+            }
         } else {
             let (bytes, ident) = token::parse_ident(bytes)?;
             match ident {
-                token::Token::Ident(ident) => (bytes, ident),
+                token::Token::Ident(value) => (bytes, value),
                 _ => unreachable!(),
             }
         };
@@ -663,7 +666,7 @@ mod selector {
                 parsed,
                 Selector::Attribute(
                     WQName("match".to_owned(), None),
-                    Some((AttributeMatcher::PrefixedBy, "quoted[][]".to_owned(), None))
+                    Some((AttributeMatcher::Exact, "quoted[][]".to_owned(), None))
                 )
             );
 
@@ -673,19 +676,19 @@ mod selector {
                 parsed,
                 Selector::Attribute(
                     WQName("match".to_owned(), None),
-                    Some((AttributeMatcher::PrefixedBy, "quoted![]".to_owned(), None))
+                    Some((AttributeMatcher::Exact, "quoted!{}".to_owned(), None))
                 )
             );
 
-            let (rest, parsed) = parse_attribute_selector(b"[match = 'quoted's]").unwrap();
+            let (rest, parsed) = parse_attribute_selector(b"[match *= 'quoted's]").unwrap();
             assert!(rest.is_empty());
             assert_eq!(
                 parsed,
                 Selector::Attribute(
-                    WQName("href".to_owned(), None),
+                    WQName("match".to_owned(), None),
                     Some((
-                        AttributeMatcher::PrefixedBy,
-                        "foo".to_owned(),
+                        AttributeMatcher::Contains,
+                        "quoted".to_owned(),
                         Some(AttributeMatcherCaseSensitivity::CaseSensitive)
                     ))
                 )
@@ -707,7 +710,7 @@ mod token {
         Ident(String),
         Function(&'a str),
         Hash(String, HashTokenFlag),
-        String(&'a str),
+        String(String),
         // The reset of these tokens are not relevant for CSS selectors.
         /*
         AtKeyword(&'a str),
@@ -875,6 +878,72 @@ mod token {
         Codepoint::take(bytes)
             .map(|(cp, bytes)| (cp.char, bytes))
             .expect("codepoint should be guaranteed valid here")
+    }
+
+    /// Parse a string token
+    ///
+    /// \> 4.3.5. Consume a string token
+    /// \> This section describes how to consume a string token from a stream of code points. It returns either a <string-token> or <bad-string-token>.
+    /// \>
+    /// \> This algorithm may be called with an ending code point, which denotes the code point that ends the string. If an ending code point is not specified, the current input code point is used.
+    /// \>
+    /// \> Initially create a <string-token> with its value set to the empty string.
+    /// \>
+    /// \> Repeatedly consume the next input code point from the stream:
+    /// \>
+    /// \> ending code point
+    /// \>   Return the <string-token>.
+    /// \> EOF
+    /// \>   This is a parse error. Return the <string-token>.
+    /// \> newline
+    /// \>   This is a parse error. Reconsume the current input code point, create a <bad-string-token>, and return it.
+    /// \> U+005C REVERSE SOLIDUS (\)
+    /// \>   If the next input code point is EOF, do nothing.
+    /// \>   Otherwise, if the next input code point is a newline, consume it.
+    /// \>   Otherwise, (the stream starts with a valid escape) consume an escaped code point and append the returned code point to the <string-token>’s value.
+    /// \>
+    /// \> anything else
+    /// \>   Append the current input code point to the <string-token>’s value.
+    ///
+    /// https://www.w3.org/TR/css-syntax-3/#consume-string-token
+    pub(super) fn parse_string(bytes: &[u8]) -> R<Token> {
+        assert!(matches!(bytes[0], b'\'' | b'"'));
+
+        let ending_code_point = bytes[0];
+
+        let mut string = String::new();
+        let mut bytes = &bytes[1..];
+        while !bytes.is_empty() {
+            bytes = match bytes[0] {
+                b'\\' => {
+                    if bytes.len() < 2 {
+                        return Err(());
+                    }
+                    if bytes[1] == b'\n' {
+                        string.push('\n');
+                        &bytes[2..]
+                    } else {
+                        let (cp, bytes) = consume_escaped_codepoint(&bytes[1..]);
+                        string.push(cp);
+                        bytes
+                    }
+                }
+                b'\n' => {
+                    break;
+                }
+                b if b == ending_code_point => {
+                    bytes = &bytes[1..];
+                    break;
+                }
+                _ => {
+                    let (cp, bytes) = Codepoint::take(bytes).ok_or(())?;
+                    string.push(cp.char);
+                    bytes
+                }
+            }
+        }
+
+        Ok((bytes, Token::String(string)))
     }
 
     /// Parse an ident token
